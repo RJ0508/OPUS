@@ -123,7 +123,7 @@ def run(
         _emit(progress_callback, "scan", "Scanning full document with AI", 44)
         llm_client, llm_settings = build_openai_client(
             "https://api.moonshot.cn/v1",
-            "kimi-k2.5",
+            "kimi-k2.6",
             default_provider="moonshot",
         )
         llm_model = llm_settings.model if llm_settings else None

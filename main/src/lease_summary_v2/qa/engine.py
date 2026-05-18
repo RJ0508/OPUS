@@ -11,7 +11,7 @@ from lease_summary.llm_config import LLMSettings, build_openai_client, is_local_
 from ..parsers.pdf_text import DocumentText
 
 _DEFAULT_BASE_URL = "https://api.moonshot.cn/v1"
-_DEFAULT_MODEL = "kimi-k2.5"
+_DEFAULT_MODEL = "kimi-k2.6"
 _REMOTE_MAX_DOC_CHARS = 120_000
 _LOCAL_MAX_DOC_CHARS = 120_000
 _LOCAL_FALLBACK_DOC_CHARS = 32_000

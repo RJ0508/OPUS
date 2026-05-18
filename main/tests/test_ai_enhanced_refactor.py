@@ -152,6 +152,57 @@ def test_semantic_scan_retries_json_object_when_structured_content_is_invalid():
     assert findings[0].field_path == "parties.tenant_name"
 
 
+def test_semantic_scan_accepts_whitespace_normalized_evidence_quote():
+    doc_index = _doc_index(["Tenant:\n  ACME Limited\nMonthly rent shall be HK$10,000."])
+
+    def fake_scan(chunk, _fields):
+        return [
+            SemanticFinding(
+                field_path="parties.tenant_name",
+                value="ACME Limited",
+                evidence_quote="Tenant: ACME Limited",
+                confidence=0.88,
+                page_hint=chunk.page_start,
+            )
+        ]
+
+    candidates = semantic_scan_document(doc_index, scan_chunk_fn=fake_scan)
+
+    assert len(candidates) == 1
+    assert candidates[0].evidence[0].quote == "Tenant:\n  ACME Limited"
+
+
+def test_semantic_scan_accepts_common_json_aliases_from_non_strict_models():
+    class FakeCompletions:
+        def create(self, **_kwargs):
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content='[{"fieldPath":"financials.monthly_rent_hkd",'
+                                    '"value":10000,"quote":"Monthly rent shall be HK$10,000.",'
+                                    '"page":1,"reason":"Rent schedule"}]'
+                        )
+                    )
+                ]
+            )
+
+    chunk = DocumentChunk(
+        chunk_id="page_1_chunk_1",
+        text="Monthly rent shall be HK$10,000.",
+        page_start=1,
+        page_end=1,
+        section="principal_terms",
+    )
+    client = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions()))
+
+    findings = semantic_scan_chunk(chunk, [], client=client, model="provider-model")
+
+    assert len(findings) == 1
+    assert findings[0].field_path == "financials.monthly_rent_hkd"
+    assert findings[0].confidence == 0.7
+
+
 def test_agent_marks_unresolved_rule_semantic_conflict_for_review():
     doc_index = _doc_index(["The monthly rent shall be HK$10,000. The monthly rent may be reviewed."])
     rule = FieldCandidate(

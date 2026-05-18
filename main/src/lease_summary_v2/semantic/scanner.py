@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+from difflib import SequenceMatcher
 from typing import Callable
 
 from lease_summary.llm_config import _safe_chat_create, build_openai_client, structured_response_format
@@ -33,7 +34,7 @@ def semantic_scan_document(
         if client is None or not model:
             client, settings = build_openai_client(
                 "https://api.moonshot.cn/v1",
-                "kimi-k2.5",
+                "kimi-k2.6",
                 default_provider="moonshot",
             )
             model = settings.model if settings else None
@@ -145,6 +146,7 @@ def _parse_semantic_response(raw: str, *, chunk_id: str) -> tuple[SemanticScanRe
     data = _parse_json((raw or "").strip())
     if not data:
         return None, f"non-JSON content for {chunk_id}"
+    data = _normalise_semantic_payload(data)
     try:
         return SemanticScanResult.model_validate(data), ""
     except Exception as exc:
@@ -158,9 +160,10 @@ def _finding_to_candidate(finding: SemanticFinding, chunk: DocumentChunk) -> Fie
     if _is_missing(value):
         return None
     quote = (finding.evidence_quote or "").strip()
-    if not quote or quote not in chunk.text:
+    location = _locate_evidence_quote(quote, chunk.text)
+    if location is None:
         return None
-    start = chunk.text.find(quote)
+    evidence_quote, start, end = location
     page = finding.page_hint or chunk.page_start
     return FieldCandidate(
         field_path=finding.field_path,
@@ -169,11 +172,11 @@ def _finding_to_candidate(finding: SemanticFinding, chunk: DocumentChunk) -> Fie
         source="semantic_llm",
         evidence=[EvidenceSpan(
             page=page,
-            quote=quote,
+            quote=evidence_quote,
             method="semantic_llm",
             chunk_id=chunk.chunk_id,
-            char_start=start if start >= 0 else None,
-            char_end=start + len(quote) if start >= 0 else None,
+            char_start=start,
+            char_end=end,
         )],
         extractor="semantic_scan_document",
         notes=finding.notes,
@@ -194,13 +197,149 @@ def _parse_json(text: str) -> dict | None:
     text = re.sub(r"\s*```\s*$", "", text)
     try:
         data = json.loads(text)
+        if isinstance(data, list):
+            return {"findings": data}
         return data if isinstance(data, dict) else None
     except json.JSONDecodeError:
         match = re.search(r"\{.*\}", text, re.DOTALL)
         if not match:
-            return None
+            array_match = re.search(r"\[.*\]", text, re.DOTALL)
+            if not array_match:
+                return None
+            try:
+                data = json.loads(array_match.group(0))
+                return {"findings": data} if isinstance(data, list) else None
+            except json.JSONDecodeError:
+                return None
         try:
             data = json.loads(match.group(0))
             return data if isinstance(data, dict) else None
         except json.JSONDecodeError:
             return None
+
+
+def _normalise_semantic_payload(data: dict) -> dict:
+    findings = data.get("findings")
+    if not isinstance(findings, list):
+        for key in ("results", "fields", "items", "extractions"):
+            value = data.get(key)
+            if isinstance(value, list):
+                findings = value
+                break
+    if not isinstance(findings, list):
+        return data
+
+    normalised: list[dict] = []
+    for item in findings:
+        if not isinstance(item, dict):
+            continue
+        field_path = _first_str(item, "field_path", "fieldPath", "path", "field", "key")
+        quote = _first_str(item, "evidence_quote", "evidenceQuote", "quote", "source_quote", "sourceQuote", "evidence")
+        if not field_path or not quote:
+            continue
+        normalised.append({
+            "field_path": field_path,
+            "value": item.get("value", item.get("selected_value")),
+            "normalized_value": item.get("normalized_value", item.get("normalizedValue", item.get("normalised_value"))),
+            "evidence_quote": quote,
+            "confidence": _confidence(item.get("confidence")),
+            "page_hint": item.get("page_hint", item.get("pageHint", item.get("page"))),
+            "notes": _first_str(item, "notes", "reason", "reasoning", "comment") or "",
+        })
+    return {"findings": normalised}
+
+
+def _first_str(data: dict, *keys: str) -> str:
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _confidence(value) -> float:
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        confidence = 0.7
+    return max(0.0, min(1.0, confidence))
+
+
+def _locate_evidence_quote(quote: str, text: str) -> tuple[str, int, int] | None:
+    quote = (quote or "").strip()
+    if not quote:
+        return None
+
+    start = text.find(quote)
+    if start >= 0:
+        return quote, start, start + len(quote)
+
+    lowered_start = text.lower().find(quote.lower())
+    if lowered_start >= 0:
+        return text[lowered_start:lowered_start + len(quote)], lowered_start, lowered_start + len(quote)
+
+    normalised_text, index_map = _collapse_whitespace_with_map(text)
+    normalised_quote = " ".join(quote.split())
+    if normalised_quote:
+        pos = normalised_text.find(normalised_quote)
+        if pos < 0:
+            pos = normalised_text.lower().find(normalised_quote.lower())
+        if pos >= 0 and index_map:
+            start = index_map[pos]
+            end = index_map[min(pos + len(normalised_quote) - 1, len(index_map) - 1)] + 1
+            return text[start:end], start, end
+
+    return _fuzzy_quote_window(quote, text)
+
+
+def _collapse_whitespace_with_map(text: str) -> tuple[str, list[int]]:
+    chars: list[str] = []
+    index_map: list[int] = []
+    in_space = False
+    for index, char in enumerate(text):
+        if char.isspace():
+            if chars and not in_space:
+                chars.append(" ")
+                index_map.append(index)
+            in_space = True
+            continue
+        chars.append(char)
+        index_map.append(index)
+        in_space = False
+
+    while chars and chars[-1] == " ":
+        chars.pop()
+        index_map.pop()
+    return "".join(chars), index_map
+
+
+def _fuzzy_quote_window(quote: str, text: str) -> tuple[str, int, int] | None:
+    quote_tokens = _tokens(quote)
+    if len(quote_tokens) < 3:
+        return None
+    quote_token_set = set(quote_tokens)
+    best: tuple[float, str, int, int] | None = None
+    for match in re.finditer(r"[^.\n;。；]{20,500}(?:[.\n;。；]|$)", text):
+        window = match.group(0).strip()
+        if not window:
+            continue
+        window_tokens = set(_tokens(window))
+        if not window_tokens:
+            continue
+        overlap = len(quote_token_set & window_tokens) / len(quote_token_set)
+        ratio = SequenceMatcher(None, _normalise_for_similarity(quote), _normalise_for_similarity(window)).ratio()
+        score = max(overlap, ratio)
+        if best is None or score > best[0]:
+            start = text.find(window, match.start(), match.end())
+            best = (score, window, start if start >= 0 else match.start(), (start if start >= 0 else match.start()) + len(window))
+    if best is None or best[0] < 0.74:
+        return None
+    return best[1], best[2], best[3]
+
+
+def _tokens(value: str) -> list[str]:
+    return re.findall(r"[a-z0-9$%]+", value.lower())
+
+
+def _normalise_for_similarity(value: str) -> str:
+    return " ".join(_tokens(value))

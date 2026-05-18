@@ -28,7 +28,7 @@ from ..parsers.section_splitter import SplitDocument
 
 # ── Config ────────────────────────────────────────────────────────────────────
 _DEFAULT_BASE_URL = "https://api.moonshot.cn/v1"
-_DEFAULT_MODEL = "kimi-k2.5"
+_DEFAULT_MODEL = "kimi-k2.6"
 _CONFIG_PATH = Path.home() / ".opus_lease_summary" / "config.json"
 
 _MAX_CONTEXT_CHARS = 60_000

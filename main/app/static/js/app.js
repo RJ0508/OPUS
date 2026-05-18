@@ -82,7 +82,7 @@ const PROVIDER_CATALOG = {
     baseUrl: 'https://api.moonshot.cn/v1',
     requiresKey: true,
     keyPlaceholder: 'sk-…',
-    defaultModel: 'kimi-k2.5',
+    defaultModel: 'kimi-k2.6',
   },
   lmstudio: {
     label: 'LM Studio (Local)',

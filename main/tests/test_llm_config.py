@@ -115,7 +115,7 @@ def test_moonshot_default_base_url_matches_public_platform(monkeypatch):
 
     assert settings is not None
     assert settings.base_url == "https://api.moonshot.cn/v1"
-    assert settings.model == "kimi-k2.5"
+    assert settings.model == "kimi-k2.6"
 
 
 def test_local_provider_helper_detects_localhost_endpoint():
@@ -178,7 +178,7 @@ def test_safe_chat_create_retries_temperature_one_models():
     class FakeCompletions:
         def create(self, **kwargs):
             calls.append(kwargs)
-            if len(calls) == 1:
+            if "temperature" in kwargs:
                 raise RuntimeError("invalid temperature: only 1 is allowed for this model")
             return SimpleNamespace(ok=True)
 
@@ -194,8 +194,9 @@ def test_safe_chat_create_retries_temperature_one_models():
 
     assert response.ok is True
     assert calls[0]["timeout"] == 45.0
-    assert calls[0]["temperature"] == 0
-    assert calls[1]["temperature"] == 1
+    assert "temperature" not in calls[0]
+    assert calls[0]["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert len(calls) == 1
 
 
 def test_safe_chat_create_adapts_common_provider_parameter_rejections():
@@ -272,3 +273,27 @@ def test_safe_chat_create_preserves_explicit_timeout():
 
     assert response.ok is True
     assert calls[0]["timeout"] == 3
+
+
+def test_safe_chat_create_removes_rejected_extra_body_for_compatible_providers():
+    calls: list[dict] = []
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                raise RuntimeError("extra_body.thinking is not supported")
+            return SimpleNamespace(ok=True)
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions()))
+
+    response = llm_config._safe_chat_create(
+        client,
+        model="kimi-k2.6",
+        messages=[],
+        temperature=0,
+    )
+
+    assert response.ok is True
+    assert calls[0]["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert "extra_body" not in calls[1]

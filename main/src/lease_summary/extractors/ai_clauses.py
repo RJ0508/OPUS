@@ -8,7 +8,7 @@ from ..parsers.section_splitter import SplitDocument
 
 # ── Config ──────────────────────────────────────────────────────────────────
 _DEFAULT_BASE_URL = "https://api.moonshot.cn/v1"
-_DEFAULT_MODEL = "kimi-k2.5"
+_DEFAULT_MODEL = "kimi-k2.6"
 _SYSTEM_PROMPT = (
     "You are a Hong Kong commercial lease analyst. "
     "Extract key facts from lease clauses in concise English. "

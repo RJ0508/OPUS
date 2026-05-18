@@ -47,7 +47,7 @@ _PROVIDER_DEFAULTS = {
     },
     "moonshot": {
         "base_url": "https://api.moonshot.cn/v1",
-        "model": "kimi-k2.5",
+        "model": "kimi-k2.6",
     },
     "ollama": {
         "base_url": _DEFAULT_OLLAMA_BASE_URL,
@@ -379,7 +379,7 @@ def _safe_chat_create(client, **kwargs):
     parameters. This helper keeps callers provider-agnostic by retrying with
     conservative parameter changes when a model rejects otherwise valid input.
     """
-    current_kwargs = _with_default_chat_timeout(dict(kwargs))
+    current_kwargs = _prepare_chat_kwargs(dict(kwargs))
     seen_signatures: set[str] = set()
     last_exc: Exception | None = None
 
@@ -442,6 +442,11 @@ def _adapt_chat_kwargs_for_error(kwargs: dict, error_text: str) -> dict | None:
         retry_kwargs.pop("parallel_tool_calls", None)
         return retry_kwargs
 
+    if _extra_body_rejected(text) and "extra_body" in kwargs:
+        retry_kwargs = dict(kwargs)
+        retry_kwargs.pop("extra_body", None)
+        return retry_kwargs
+
     if _parameter_rejected(text, "timeout") and "timeout" in kwargs:
         retry_kwargs = dict(kwargs)
         retry_kwargs.pop("timeout", None)
@@ -450,9 +455,38 @@ def _adapt_chat_kwargs_for_error(kwargs: dict, error_text: str) -> dict | None:
     return None
 
 
+def _prepare_chat_kwargs(kwargs: dict) -> dict:
+    kwargs = _with_default_chat_timeout(kwargs)
+    return _with_model_specific_chat_options(kwargs)
+
+
 def _with_default_chat_timeout(kwargs: dict) -> dict:
     if "timeout" not in kwargs:
         kwargs["timeout"] = _chat_request_timeout_seconds()
+    return kwargs
+
+
+def _with_model_specific_chat_options(kwargs: dict) -> dict:
+    model = str(kwargs.get("model") or "").strip().lower()
+    if not model:
+        return kwargs
+
+    if _is_kimi_configurable_thinking_model(model):
+        thinking_mode = os.environ.get("LLM_THINKING", "disabled").strip().lower()
+        if thinking_mode not in {"enabled", "default"}:
+            extra_body = dict(kwargs.get("extra_body") or {})
+            thinking = dict(extra_body.get("thinking") or {})
+            thinking.setdefault("type", "disabled")
+            extra_body["thinking"] = thinking
+            kwargs["extra_body"] = extra_body
+            kwargs.pop("temperature", None)
+            kwargs.pop("top_p", None)
+        elif thinking_mode == "enabled":
+            kwargs["temperature"] = 1.0
+
+    elif _is_kimi_forced_thinking_model(model):
+        kwargs["temperature"] = 1.0
+
     return kwargs
 
 
@@ -526,6 +560,37 @@ def _tools_rejected(error_text: str) -> bool:
     )
 
 
+def _extra_body_rejected(error_text: str) -> bool:
+    text = (error_text or "").lower()
+    if not any(term in text for term in ("extra_body", "thinking")):
+        return False
+    return any(
+        marker in text
+        for marker in (
+            "unsupported",
+            "not supported",
+            "does not support",
+            "unknown",
+            "unrecognized",
+            "unexpected",
+            "invalid",
+            "extra inputs",
+        )
+    )
+
+
 def _temperature_must_be_one(error_text: str) -> bool:
     text = (error_text or "").lower()
     return "temperature" in text and "only 1" in text and ("allowed" in text or "invalid" in text)
+
+
+def _is_kimi_configurable_thinking_model(model: str) -> bool:
+    normalized = model.replace("_", "-")
+    if "kimi-k2-thinking" in normalized:
+        return False
+    return any(marker in normalized for marker in ("kimi-k2.6", "kimi-k2.5", "kimi-k2-6", "kimi-k2-5", "kimi-k2p5"))
+
+
+def _is_kimi_forced_thinking_model(model: str) -> bool:
+    normalized = model.replace("_", "-")
+    return "kimi-k2-thinking" in normalized or normalized.endswith("-thinking")
