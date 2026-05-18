@@ -383,6 +383,11 @@ def _safe_chat_create(client, **kwargs):
         return client.chat.completions.create(**kwargs)
     except Exception as exc:
         text = str(exc).lower()
+        if _temperature_must_be_one(text) and kwargs.get("temperature") != 1:
+            retry_kwargs = dict(kwargs)
+            retry_kwargs["temperature"] = 1
+            return client.chat.completions.create(**retry_kwargs)
+
         # max_tokens -> max_completion_tokens
         if "max_tokens" in text and ("unsupported" in text or "not supported" in text):
             retry_kwargs = dict(kwargs)
@@ -392,9 +397,18 @@ def _safe_chat_create(client, **kwargs):
                     return client.chat.completions.create(**retry_kwargs)
                 except Exception as exc2:
                     text2 = str(exc2).lower()
-                    # Some reasoning models also reject temperature
+                    # Some models reject temperature entirely, while Kimi k2.6
+                    # currently accepts only temperature=1.
                     if "temperature" in text2 and ("unsupported" in text2 or "not supported" in text2):
                         retry_kwargs.pop("temperature", None)
                         return client.chat.completions.create(**retry_kwargs)
+                    if _temperature_must_be_one(text2) and retry_kwargs.get("temperature") != 1:
+                        retry_kwargs["temperature"] = 1
+                        return client.chat.completions.create(**retry_kwargs)
                     raise
         raise
+
+
+def _temperature_must_be_one(error_text: str) -> bool:
+    text = (error_text or "").lower()
+    return "temperature" in text and "only 1" in text and ("allowed" in text or "invalid" in text)

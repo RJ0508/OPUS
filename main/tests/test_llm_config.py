@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
@@ -169,3 +170,28 @@ def test_list_available_models_falls_back_to_http_and_dedupes(monkeypatch):
     )
 
     assert models == ["model-a", "model-b"]
+
+
+def test_safe_chat_create_retries_temperature_one_models():
+    calls: list[dict] = []
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                raise RuntimeError("invalid temperature: only 1 is allowed for this model")
+            return SimpleNamespace(ok=True)
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions()))
+
+    response = llm_config._safe_chat_create(
+        client,
+        model="kimi-k2.6",
+        messages=[],
+        temperature=0,
+        max_tokens=10,
+    )
+
+    assert response.ok is True
+    assert calls[0]["temperature"] == 0
+    assert calls[1]["temperature"] == 1

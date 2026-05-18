@@ -104,6 +104,15 @@ def run(
     # ── Step 4b: AI Enhanced semantic scan + bounded agent ─────────────────────
     semantic_candidates: list[FieldCandidate] = []
     enhanced = None
+    trace_warning_seen: set[str] = set()
+
+    def warn_once(message: str) -> None:
+        message = (message or "").strip()
+        if not message or message in trace_warning_seen:
+            return
+        trace_warning_seen.add(message)
+        trace.warnings.append(message)
+
     if extraction_mode == "standard":
         _sync_break_clause(summary)
     elif legacy_ai:
@@ -129,6 +138,7 @@ def run(
             client=llm_client,
             model=llm_model,
             progress_callback=progress_callback,
+            warning_callback=warn_once,
         )
         trace.semantic_candidates_count = len(semantic_candidates)
         if semantic_candidates:

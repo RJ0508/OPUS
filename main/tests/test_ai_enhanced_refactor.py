@@ -26,7 +26,7 @@ from lease_summary_v2.models import Evidence, ExtractionMethod, ExtractionResult
 from lease_summary_v2.parsers.pdf_text import DocumentText, PageText  # noqa: E402
 from lease_summary_v2.parsers.section_splitter import SplitDocument  # noqa: E402
 from lease_summary_v2.pipeline import _sync_break_clause  # noqa: E402
-from lease_summary_v2.semantic.scanner import semantic_scan_document  # noqa: E402
+from lease_summary_v2.semantic.scanner import semantic_scan_chunk, semantic_scan_document  # noqa: E402
 from lease_summary_v2.semantic.schema import SemanticFinding  # noqa: E402
 
 
@@ -116,6 +116,40 @@ def test_semantic_scan_visits_every_chunk_and_requires_quote():
 
     assert visited == ["page_1_chunk_1", "page_2_chunk_1"]
     assert [candidate.field_path for candidate in candidates] == ["financials.monthly_rent_hkd"]
+
+
+def test_semantic_scan_retries_json_object_when_structured_content_is_invalid():
+    calls: list[dict] = []
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            content = (
+                '{"'
+                if len(calls) == 1
+                else '{"findings":[{"field_path":"parties.tenant_name","value":"ACME Limited",'
+                     '"normalized_value":"ACME Limited","evidence_quote":"Tenant: ACME Limited",'
+                     '"confidence":0.9,"page_hint":1,"notes":"Tenant label."}]}'
+            )
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
+            )
+
+    chunk = DocumentChunk(
+        chunk_id="page_1_chunk_1",
+        text="Tenant: ACME Limited",
+        page_start=1,
+        page_end=1,
+        section="principal_terms",
+    )
+    client = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions()))
+
+    findings = semantic_scan_chunk(chunk, [], client=client, model="kimi-k2.6")
+
+    assert len(calls) == 2
+    assert calls[0]["response_format"]["type"] == "json_schema"
+    assert calls[1]["response_format"] == {"type": "json_object"}
+    assert findings[0].field_path == "parties.tenant_name"
 
 
 def test_agent_marks_unresolved_rule_semantic_conflict_for_review():

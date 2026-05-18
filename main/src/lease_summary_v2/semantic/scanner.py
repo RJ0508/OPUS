@@ -25,6 +25,7 @@ def semantic_scan_document(
     model: str | None = None,
     scan_chunk_fn: ScanChunkFn | None = None,
     progress_callback: Callable[..., None] | None = None,
+    warning_callback: Callable[[str], None] | None = None,
 ) -> list[FieldCandidate]:
     """Scan every document chunk and return candidates with verbatim evidence."""
     fields = fields or FIELD_SPECS
@@ -37,6 +38,8 @@ def semantic_scan_document(
             )
             model = settings.model if settings else None
         if client is None or not model:
+            if warning_callback is not None:
+                warning_callback("LLM client unavailable; semantic scan skipped.")
             return []
 
     candidates: list[FieldCandidate] = []
@@ -53,7 +56,13 @@ def semantic_scan_document(
         findings = (
             scan_chunk_fn(chunk, fields)
             if scan_chunk_fn is not None
-            else semantic_scan_chunk(chunk, fields, client=client, model=model)
+            else semantic_scan_chunk(
+                chunk,
+                fields,
+                client=client,
+                model=model,
+                warning_callback=warning_callback,
+            )
         )
         for finding in findings:
             candidate = _finding_to_candidate(finding, chunk)
@@ -75,6 +84,7 @@ def semantic_scan_chunk(
     *,
     client,
     model: str,
+    warning_callback: Callable[[str], None] | None = None,
 ) -> list[SemanticFinding]:
     field_lines = "\n".join(f"- {field.field_path}: {field.label} ({field.value_type})" for field in fields)
     prompt = SEMANTIC_USER_TEMPLATE.format(
@@ -98,25 +108,47 @@ def semantic_scan_chunk(
             SEMANTIC_SCAN_JSON_SCHEMA,
         ),
     }
+    structured_error = ""
     try:
         response = _safe_chat_create(client, **kwargs)
-    except Exception:
-        fallback_kwargs = dict(kwargs)
-        fallback_kwargs["response_format"] = {"type": "json_object"}
-        try:
-            response = _safe_chat_create(client, **fallback_kwargs)
-        except Exception:
-            return []
+        result, structured_error = _parse_semantic_response(
+            response.choices[0].message.content or "",
+            chunk_id=chunk.chunk_id,
+        )
+        if result is not None:
+            return result.findings
+    except Exception as exc:
+        structured_error = f"{type(exc).__name__}: {str(exc)[:220]}"
 
-    raw = (response.choices[0].message.content or "").strip()
-    data = _parse_json(raw)
-    if not data:
-        return []
+    fallback_kwargs = dict(kwargs)
+    fallback_kwargs["response_format"] = {"type": "json_object"}
     try:
-        result = SemanticScanResult.model_validate(data)
-    except Exception:
-        return []
-    return result.findings
+        response = _safe_chat_create(client, **fallback_kwargs)
+        result, fallback_error = _parse_semantic_response(
+            response.choices[0].message.content or "",
+            chunk_id=chunk.chunk_id,
+        )
+        if result is not None:
+            return result.findings
+    except Exception as fallback_exc:
+        fallback_error = f"{type(fallback_exc).__name__}: {str(fallback_exc)[:220]}"
+
+    if warning_callback is not None:
+        warning_callback(
+            f"Semantic scan failed for {chunk.chunk_id}: "
+            f"structured={structured_error}; json_object={fallback_error}"
+        )
+    return []
+
+
+def _parse_semantic_response(raw: str, *, chunk_id: str) -> tuple[SemanticScanResult | None, str]:
+    data = _parse_json((raw or "").strip())
+    if not data:
+        return None, f"non-JSON content for {chunk_id}"
+    try:
+        return SemanticScanResult.model_validate(data), ""
+    except Exception as exc:
+        return None, f"schema validation failed for {chunk_id}: {type(exc).__name__}: {str(exc)[:220]}"
 
 
 def _finding_to_candidate(finding: SemanticFinding, chunk: DocumentChunk) -> FieldCandidate | None:
