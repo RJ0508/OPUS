@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import sys
 import os
+import json
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -201,6 +202,55 @@ def test_semantic_scan_accepts_common_json_aliases_from_non_strict_models():
     assert len(findings) == 1
     assert findings[0].field_path == "financials.monthly_rent_hkd"
     assert findings[0].confidence == 0.7
+
+
+def test_semantic_scan_flattens_nested_section_json_from_models():
+    class FakeCompletions:
+        def create(self, **_kwargs):
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=json.dumps({
+                                "parties": {
+                                    "tenant_name": {
+                                        "value": "JSG Limited",
+                                        "evidence_quote": "3.\nTenant's Name:\nJSG Limited",
+                                    }
+                                },
+                                "financials": {
+                                    "monthly_rent_hkd": {
+                                        "value": 29946,
+                                        "evidence_quote": (
+                                            "Total Monthly Rent:\nThe Total Monthly Rent for the said "
+                                            "Office Unit shall be fixed at Hong Kong $29,946.00"
+                                        ),
+                                    }
+                                },
+                            })
+                        )
+                    )
+                ]
+            )
+
+    chunk = DocumentChunk(
+        chunk_id="page_1_chunk_1",
+        text=(
+            "3.\nTenant's Name:\nJSG Limited\n"
+            "Total Monthly Rent:\nThe Total Monthly Rent for the said Office Unit shall be fixed at Hong Kong $29,946.00"
+        ),
+        page_start=1,
+        page_end=1,
+        section="principal_terms",
+    )
+    client = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions()))
+
+    findings = semantic_scan_chunk(chunk, [], client=client, model="provider-model")
+
+    assert [finding.field_path for finding in findings] == [
+        "parties.tenant_name",
+        "financials.monthly_rent_hkd",
+    ]
 
 
 def test_agent_marks_unresolved_rule_semantic_conflict_for_review():

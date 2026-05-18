@@ -65,10 +65,17 @@ def semantic_scan_document(
                 warning_callback=warning_callback,
             )
         )
+        accepted_for_chunk = 0
         for finding in findings:
             candidate = _finding_to_candidate(finding, chunk)
             if candidate is not None:
                 candidates.append(candidate)
+                accepted_for_chunk += 1
+        if findings and accepted_for_chunk == 0 and warning_callback is not None:
+            warning_callback(
+                f"Semantic scan returned {len(findings)} findings for {chunk.chunk_id}, "
+                "but none had evidence that could be located in the source chunk."
+            )
     if progress_callback is not None:
         progress_callback(
             "scan",
@@ -226,27 +233,74 @@ def _normalise_semantic_payload(data: dict) -> dict:
             if isinstance(value, list):
                 findings = value
                 break
+    if not isinstance(findings, list) or not findings:
+        nested_findings = _flatten_nested_semantic_payload(data)
+        if nested_findings:
+            findings = nested_findings
     if not isinstance(findings, list):
         return data
 
     normalised: list[dict] = []
     for item in findings:
-        if not isinstance(item, dict):
+        normalised_item = _normalise_finding_item(item)
+        if normalised_item is None:
             continue
-        field_path = _first_str(item, "field_path", "fieldPath", "path", "field", "key")
-        quote = _first_str(item, "evidence_quote", "evidenceQuote", "quote", "source_quote", "sourceQuote", "evidence")
-        if not field_path or not quote:
-            continue
-        normalised.append({
-            "field_path": field_path,
-            "value": item.get("value", item.get("selected_value")),
-            "normalized_value": item.get("normalized_value", item.get("normalizedValue", item.get("normalised_value"))),
-            "evidence_quote": quote,
-            "confidence": _confidence(item.get("confidence")),
-            "page_hint": item.get("page_hint", item.get("pageHint", item.get("page"))),
-            "notes": _first_str(item, "notes", "reason", "reasoning", "comment") or "",
-        })
+        normalised.append(normalised_item)
     return {"findings": normalised}
+
+
+def _normalise_finding_item(item: object) -> dict | None:
+    if not isinstance(item, dict):
+        return None
+    field_path = _first_str(item, "field_path", "fieldPath", "path", "field", "key")
+    quote = _first_str(item, "evidence_quote", "evidenceQuote", "quote", "source_quote", "sourceQuote", "evidence")
+    if not field_path or not quote:
+        return None
+    return {
+        "field_path": field_path,
+        "value": item.get("value", item.get("selected_value")),
+        "normalized_value": item.get("normalized_value", item.get("normalizedValue", item.get("normalised_value"))),
+        "evidence_quote": quote,
+        "confidence": _confidence(item.get("confidence")),
+        "page_hint": item.get("page_hint", item.get("pageHint", item.get("page"))),
+        "notes": _first_str(item, "notes", "reason", "reasoning", "comment") or "",
+    }
+
+
+def _flatten_nested_semantic_payload(data: dict) -> list[dict]:
+    findings: list[dict] = []
+    for key, value in data.items():
+        if key in {"findings", "results", "fields", "items", "extractions"}:
+            continue
+        if not isinstance(value, dict):
+            continue
+        if key in FIELD_SPEC_BY_PATH:
+            _append_nested_finding(findings, key, value)
+            continue
+        for child_key, child_value in value.items():
+            if not isinstance(child_value, dict):
+                continue
+            field_path = child_key if child_key in FIELD_SPEC_BY_PATH else f"{key}.{child_key}"
+            _append_nested_finding(findings, field_path, child_value)
+    return findings
+
+
+def _append_nested_finding(findings: list[dict], field_path: str, item: dict) -> None:
+    if field_path not in FIELD_SPEC_BY_PATH:
+        return
+    value = item.get("value", item.get("selected_value"))
+    quote = _first_str(item, "evidence_quote", "evidenceQuote", "quote", "source_quote", "sourceQuote", "evidence")
+    if _is_missing(value) or not quote:
+        return
+    findings.append({
+        "field_path": field_path,
+        "value": value,
+        "normalized_value": item.get("normalized_value", item.get("normalizedValue", item.get("normalised_value"))),
+        "evidence_quote": quote,
+        "confidence": _confidence(item.get("confidence")),
+        "page_hint": item.get("page_hint", item.get("pageHint", item.get("page"))),
+        "notes": _first_str(item, "notes", "reason", "reasoning", "comment") or "",
+    })
 
 
 def _first_str(data: dict, *keys: str) -> str:
