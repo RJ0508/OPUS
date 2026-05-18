@@ -254,6 +254,40 @@ def test_semantic_scan_flattens_nested_section_json_from_models():
     ]
 
 
+def test_semantic_scan_accepts_nested_scalar_values_when_value_is_source_evidence():
+    class FakeCompletions:
+        def create(self, **_kwargs):
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=json.dumps({
+                                "parties": {
+                                    "tenant_name": "JSG Limited",
+                                },
+                                "premises": {
+                                    "building_name": "Tai Yau Building",
+                                },
+                            })
+                        )
+                    )
+                ]
+            )
+
+    doc_index = _doc_index([
+        "Tenant's Name:\nJSG Limited\nPremises: Room 1308, Tai Yau Building."
+    ])
+    client = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions()))
+
+    candidates = semantic_scan_document(doc_index, client=client, model="moonshot-v1-128k-vision-preview")
+
+    assert [candidate.field_path for candidate in candidates] == [
+        "parties.tenant_name",
+        "premises.building_name",
+    ]
+    assert candidates[0].evidence[0].quote == "JSG Limited"
+
+
 def test_agent_marks_unresolved_rule_semantic_conflict_for_review():
     doc_index = _doc_index(["The monthly rent shall be HK$10,000. The monthly rent may be reviewed."])
     rule = FieldCandidate(
@@ -286,6 +320,39 @@ def test_agent_marks_unresolved_rule_semantic_conflict_for_review():
     assert decision.conflict is True
     assert decision.needs_review is True
     assert trace.agent_tool_calls
+
+
+def test_kimi_models_use_deterministic_verifier_without_unavailable_warning(monkeypatch):
+    monkeypatch.delenv("LLM_TOOL_AGENT", raising=False)
+    doc_index = _doc_index(["Tenant: ACME Limited."])
+    candidate = FieldCandidate(
+        field_path="parties.tenant_name",
+        value="ACME Limited",
+        confidence=0.9,
+        source="semantic_llm",
+        evidence=[EvidenceSpan(page=1, quote="Tenant: ACME Limited.", method="semantic_llm")],
+        extractor="test",
+    )
+    trace = ExtractionTrace(mode="ai_enhanced", file_name="lease.pdf")
+
+    class FailingCompletions:
+        def create(self, **_kwargs):
+            raise AssertionError("Kimi auto mode should not call the LLM tool finalizer")
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=FailingCompletions()))
+
+    result = run_enhancement_agent(
+        doc_index=doc_index,
+        current_summary=LeaseSummary(),
+        rule_candidates=[],
+        semantic_candidates=[candidate],
+        trace=trace,
+        client=client,
+        model="kimi-k2.6",
+    )
+
+    assert result.decisions[0].field_path == "parties.tenant_name"
+    assert not any("tool-calling agent unavailable" in warning for warning in trace.warnings)
 
 
 def test_llm_tool_agent_can_call_tools_and_return_guarded_decision():
