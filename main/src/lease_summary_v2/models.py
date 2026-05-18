@@ -14,6 +14,8 @@ class ExtractionMethod(str, Enum):
     rule = "rule"
     computed = "computed"
     heuristic = "heuristic"
+    semantic_llm = "semantic_llm"
+    agent = "agent"
     manual_default = "manual_default"
 
 
@@ -21,6 +23,10 @@ class Evidence(BaseModel):
     page: int
     quote: str
     method: ExtractionMethod
+    chunk_id: str | None = None
+    char_start: int | None = None
+    char_end: int | None = None
+    tool_call_id: str | None = None
 
 
 class ExtractionResult(BaseModel):
@@ -28,6 +34,11 @@ class ExtractionResult(BaseModel):
     confidence: float = 0.0
     evidence: list[Evidence] = Field(default_factory=list)
     review_flag: Optional[str] = None
+    source: str | None = None
+    sources: list[str] = Field(default_factory=list)
+    reason_summary: str = ""
+    trace_id: str | None = None
+    needs_review: bool = False
 
     def is_found(self) -> bool:
         return self.value is not None

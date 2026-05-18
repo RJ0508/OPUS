@@ -62,6 +62,34 @@ _PROVIDER_DEFAULTS = {
     },
 }
 
+_PROVIDER_LABELS = {
+    "openai": "OpenAI",
+    "google": "Google Gemini",
+    "xai": "xAI",
+    "groq": "Groq",
+    "together": "Together AI",
+    "fireworks": "Fireworks AI",
+    "openrouter": "OpenRouter",
+    "deepseek": "DeepSeek",
+    "moonshot": "Moonshot",
+    "ollama": "Ollama",
+    "lmstudio": "LM Studio (Local)",
+    "custom": "Custom OpenAI-compatible",
+}
+
+_PROVIDER_KEY_PLACEHOLDERS = {
+    "openai": "sk-...",
+    "google": "AIza...",
+    "xai": "xai-...",
+    "groq": "gsk_...",
+    "together": "together-...",
+    "fireworks": "fw_...",
+    "openrouter": "sk-or-...",
+    "deepseek": "sk-...",
+    "moonshot": "sk-...",
+    "custom": "sk-...",
+}
+
 
 @dataclass(frozen=True)
 class LLMSettings:
@@ -173,6 +201,23 @@ def get_provider_default_model(provider: str, fallback: str = "") -> str:
     if defaults is None:
         return fallback
     return defaults["model"] or fallback
+
+
+def get_provider_catalog() -> dict[str, dict[str, object]]:
+    """Return frontend-safe provider defaults from the backend source of truth."""
+    catalog: dict[str, dict[str, object]] = {}
+    for provider, defaults in _PROVIDER_DEFAULTS.items():
+        catalog[provider] = {
+            "label": _PROVIDER_LABELS.get(provider, provider),
+            "baseUrl": defaults["base_url"],
+            "requiresKey": provider not in _LOCAL_PROVIDERS,
+            "keyPlaceholder": _PROVIDER_KEY_PLACEHOLDERS.get(provider, ""),
+            "defaultModel": defaults["model"],
+        }
+    for provider in _LOCAL_PROVIDERS:
+        if provider in catalog:
+            catalog[provider]["requiresKey"] = False
+    return catalog
 
 
 def list_available_models(

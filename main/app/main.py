@@ -12,14 +12,15 @@ from pathlib import Path
 from typing import AsyncGenerator
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .state import normalise_api_keys, state
+from .state import normalise_api_keys, normalize_mode, state
 from lease_summary.llm_config import (
+    get_provider_catalog,
     get_provider_default_base_url,
     get_provider_default_model,
     list_available_models,
@@ -44,7 +45,7 @@ _TEMP_DIR = Path(tempfile.mkdtemp(prefix="opus_lease_"))
 class SettingsPayload(BaseModel):
     api_key: str = ""
     api_keys: dict[str, str] | None = None
-    mode: str  # "regex" | "llm"
+    mode: str  # "standard" | "ai_enhanced" | "pure_llm" plus legacy values
     llm_provider: str = ""
     llm_base_url: str = ""
     llm_model: str = ""
@@ -73,7 +74,7 @@ def get_settings():
     return {
         "api_key": state.active_api_key(provider),
         "api_keys": state.api_keys,
-        "mode": state.mode,
+        "mode": normalize_mode(state.mode),
         "llm_provider": provider,
         "llm_base_url": state.llm_base_url,
         "llm_model": state.llm_model,
@@ -95,7 +96,7 @@ def save_settings(payload: SettingsPayload):
         api_keys.pop(provider, None)
 
     state.api_keys = api_keys
-    state.mode = payload.mode
+    state.mode = normalize_mode(payload.mode)
     state.llm_provider = provider
     state.llm_base_url = payload.llm_base_url.strip()
     state.llm_model = payload.llm_model.strip()
@@ -117,6 +118,11 @@ def get_llm_models(payload: ModelListPayload):
             base_url=payload.llm_base_url.strip(),
         )
     }
+
+
+@app.get("/api/llm/providers")
+def get_llm_providers():
+    return {"providers": get_provider_catalog()}
 
 
 # ── Upload & Extract ──────────────────────────────────────────────────────────
@@ -175,14 +181,20 @@ def _run_extraction(pdf_path: Path) -> dict:
     output_dir = _TEMP_DIR / "output"
     output_dir.mkdir(exist_ok=True)
 
-    if state.mode == "llm" and state.llm_enabled():
-        from lease_summary_v2.pipeline import run
-    else:
+    mode = normalize_mode(state.mode)
+    if mode == "standard" or not state.llm_enabled():
         from lease_summary.pipeline import run
+        result = run(pdf_path, output_dir=output_dir)
+    else:
+        from lease_summary_v2.pipeline import run
+        extraction_mode = "pure_llm" if mode == "pure_llm" else "ai_enhanced"
+        result = run(pdf_path, output_dir=output_dir, extraction_mode=extraction_mode)
 
-    result = run(pdf_path, output_dir=output_dir)
     state.summary = result["summary"]
     state.excel_path = result["excel"]
+    state.doc_index = result.get("doc_index")
+    state.evidence_index = result.get("evidence_index")
+    state.extraction_trace = result.get("trace")
     doc_text = result.get("doc_text")
     state.ocr_word_data = doc_text.word_bboxes if doc_text else None
     _refresh_qa_engine(prebuilt_qa=result.get("qa"))
@@ -214,10 +226,17 @@ def _refresh_qa_engine(*, prebuilt_qa=None) -> None:
         return
 
     try:
-        from lease_summary_v2.parsers.pdf_text import extract_text as _et, PageText
+        from lease_summary_v2.parsers.pdf_text import DocumentText, PageText, extract_text as _et
         from lease_summary_v2.qa.engine import QAEngine
 
-        doc = _et(state.pdf_path)
+        if state.doc_index is not None:
+            doc = DocumentText(
+                pages=list(state.doc_index.pages),
+                source_path=state.pdf_path,
+                parsed_with_ocr=bool(state.summary.document_meta.parsed_with_ocr),
+            )
+        else:
+            doc = _et(state.pdf_path)
         # Inject structured summary as page 0 so the LLM has validated data.
         ctx = _make_summary_context(state.summary)
         if ctx:
@@ -233,12 +252,31 @@ def _serialise_summary(summary) -> dict:
         # Expose evidence (page + quote) so the frontend can jump to and
         # highlight the source location when the user clicks a field.
         ev = f.evidence[0] if f.evidence else None
+        evidence = [
+            {
+                "page": item.page,
+                "quote": item.quote,
+                "method": str(item.method.value if hasattr(item.method, "value") else item.method),
+                "chunk_id": getattr(item, "chunk_id", None),
+                "tool_call_id": getattr(item, "tool_call_id", None),
+            }
+            for item in (f.evidence or [])
+            if item.quote
+        ]
+        source = getattr(f, "source", None)
+        sources = list(getattr(f, "sources", []) or ([source] if source else []))
         return {
             "value": _fmt(f.value),
             "confidence": round(f.confidence, 2),
             "flag": f.review_flag,
             "page": ev.page if ev else None,
             "quote": ev.quote if ev else None,
+            "source": source,
+            "sources": sources,
+            "needs_review": bool(getattr(f, "needs_review", False)),
+            "reason_summary": getattr(f, "reason_summary", "") or "",
+            "trace_id": getattr(f, "trace_id", None) or getattr(state.extraction_trace, "run_id", None),
+            "evidence": evidence,
         }
 
     s = summary
@@ -363,7 +401,7 @@ def _make_summary_context(summary) -> str:
         f"Rent Free Period: {v(s.term.rent_free_period_text)}{src(s.term.rent_free_period_text)}",
         f"Fit-Out Period: {v(s.term.fit_out_period_text)}{src(s.term.fit_out_period_text)}",
         f"Option to Renew: {v(s.term.option_to_renew_text)}{src(s.term.option_to_renew_text)}",
-        f"Break Clause: {v(s.clauses.break_clause_text)}{src(s.clauses.break_clause_text)}",
+        f"Break Clause: {v(s.term.tenant_termination_right_text)}{src(s.term.tenant_termination_right_text)}",
         f"Monthly Rent (HKD): {v(s.financials.monthly_rent_hkd)}{src(s.financials.monthly_rent_hkd)}",
         f"Monthly Rent PSF (HKD): {v(s.financials.monthly_rent_psf_hkd)}{src(s.financials.monthly_rent_psf_hkd)}",
         f"Management Fee Monthly (HKD): {v(s.financials.management_fee_monthly_hkd)}{src(s.financials.management_fee_monthly_hkd)}",
@@ -452,7 +490,10 @@ async def ask_question(payload: QAPayload):
 # ── Batch export ──────────────────────────────────────────────────────────────
 
 @app.post("/api/batch")
-async def batch_export(files: list[UploadFile] = File(...)):
+async def batch_export(
+    files: list[UploadFile] = File(...),
+    mode: str = Form("standard"),
+):
     from lease_summary.parsers.document_converter import (
         is_convertible_document,
         get_converted_pdf_path,
@@ -491,7 +532,8 @@ async def batch_export(files: list[UploadFile] = File(...)):
         pdf_path = await loop.run_in_executor(None, _prepare_pdf, uploaded)
         if pdf_path is None:
             raise HTTPException(400, "Only PDF and Word (.docx) files are supported.")
-        excel_path = await loop.run_in_executor(None, _run_batch_single, pdf_path)
+        batch_mode = normalize_mode(mode or state.mode)
+        excel_path = await loop.run_in_executor(None, _run_batch_single, pdf_path, batch_mode)
         if not excel_path or not Path(excel_path).exists():
             raise HTTPException(500, "Failed to process the document.")
         stem = Path(uploaded.filename).stem
@@ -508,7 +550,8 @@ async def batch_export(files: list[UploadFile] = File(...)):
             pdf_path = await loop.run_in_executor(None, _prepare_pdf, uploaded)
             if pdf_path is None:
                 continue
-            excel_path = await loop.run_in_executor(None, _run_batch_single, pdf_path)
+            batch_mode = normalize_mode(mode or state.mode)
+            excel_path = await loop.run_in_executor(None, _run_batch_single, pdf_path, batch_mode)
             if excel_path and Path(excel_path).exists():
                 zf.write(excel_path, Path(uploaded.filename).stem + ".xlsx")
 
@@ -520,13 +563,18 @@ async def batch_export(files: list[UploadFile] = File(...)):
     )
 
 
-def _run_batch_single(pdf_path: Path):
-    """Run regex pipeline for a single PDF; returns Excel path or None."""
+def _run_batch_single(pdf_path: Path, mode: str = "standard"):
+    """Run the selected pipeline for a single PDF; returns Excel path or None."""
     output_dir = _TEMP_DIR / "batch_output"
     output_dir.mkdir(exist_ok=True)
     try:
-        from lease_summary.pipeline import run
-        result = run(pdf_path, output_dir=output_dir)
+        mode = normalize_mode(mode)
+        if mode in {"ai_enhanced", "pure_llm"} and state.llm_enabled():
+            from lease_summary_v2.pipeline import run
+            result = run(pdf_path, output_dir=output_dir, extraction_mode=mode)
+        else:
+            from lease_summary.pipeline import run
+            result = run(pdf_path, output_dir=output_dir)
         return result.get("excel")
     except Exception:
         return None

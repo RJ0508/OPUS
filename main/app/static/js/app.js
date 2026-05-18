@@ -105,6 +105,14 @@ const PROVIDER_CATALOG = {
   },
 };
 
+function normalizeMode(mode) {
+  const value = (mode || '').toString().trim().toLowerCase();
+  if (value === 'regex') return 'standard';
+  if (value === 'llm' || value === 'hybrid') return 'ai_enhanced';
+  if (['standard', 'ai_enhanced', 'pure_llm'].includes(value)) return value;
+  return 'standard';
+}
+
 // ── Translations ──────────────────────────────────────────────────────────────
 const TRANSLATIONS = {
   en: {
@@ -174,7 +182,7 @@ const TRANSLATIONS = {
     // settings
     settingsTitle:   'Settings',
     providerLabel:   'LLM Provider',
-    providerHint:    'OpenAI-compatible providers only. Choose the backend for AI clause extraction and Q&A.',
+    providerHint:    'OpenAI-compatible providers only. Choose the backend for AI Enhanced extraction and Q&A.',
     apiKeyLabel:     'LLM API Key',
     apiKeyHint:      'Saved separately for each provider. Leave blank for LM Studio, Ollama, or localhost URLs.',
     baseUrlLabel:    'Base URL',
@@ -192,7 +200,7 @@ const TRANSLATIONS = {
     modelStatusSelectProvider: 'Select a provider to load available models.',
     modelStatusUnavailable: 'No models detected. Enter a custom model ID if needed.',
     modeLabel:       'Analysis Mode',
-    modeHint:        'AI Enhanced uses your configured provider to improve clause extraction.',
+    modeHint:        'Standard is fast rule-based extraction. AI Enhanced adds full-document AI review and evidence verification.',
     modalCancel:     'Cancel',
     modalSave:       'Save',
     showKey:         'Show key',
@@ -201,8 +209,12 @@ const TRANSLATIONS = {
     progressAnalyse: 'Analysing lease…',
     progressBatch:   'Processing leases…',
     stepExtract:     'Extracting text',
+    stepRule:        'Running rule extraction',
     stepAnalyse:     'Detecting fields',
+    stepScan:        'Scanning full document with AI',
+    stepVerify:      'Agent verifying evidence',
     stepGenerate:    'Generating summary',
+    stepFinalize:    'Finalizing summary',
     // batch status
     batchPending:    'Pending',
     batchDone:       'Done',
@@ -271,7 +283,7 @@ const TRANSLATIONS = {
     sectionClauses:  '條款',
     settingsTitle:   '設定',
     providerLabel:   'LLM 供應商',
-    providerHint:    '只列出 OpenAI 相容供應商。選擇 AI 條款擷取及問答所使用的後端。',
+    providerHint:    '只列出 OpenAI 相容供應商。選擇 AI 增強擷取及問答所使用的後端。',
     apiKeyLabel:     'LLM API 金鑰',
     apiKeyHint:      '每個供應商分開儲存金鑰；LM Studio、Ollama 或 localhost URL 可留空。',
     baseUrlLabel:    'Base URL',
@@ -289,7 +301,7 @@ const TRANSLATIONS = {
     modelStatusSelectProvider: '請選擇供應商以載入可用模型。',
     modelStatusUnavailable: '未檢測到可用模型；如有需要可手動輸入模型 ID。',
     modeLabel:       '分析模式',
-    modeHint:        'AI 增強模式會使用您配置的供應商提升條款擷取效果。',
+    modeHint:        '標準模式使用快速規則擷取；AI 增強會加入全文件 AI 掃描及證據核驗。',
     modalCancel:     '取消',
     modalSave:       '儲存',
     showKey:         '顯示金鑰',
@@ -297,8 +309,12 @@ const TRANSLATIONS = {
     progressAnalyse: '正在分析租約…',
     progressBatch:   '正在處理租約…',
     stepExtract:     '正在擷取文字',
+    stepRule:        '正在執行規則擷取',
     stepAnalyse:     '正在偵測欄位',
+    stepScan:        '正在以 AI 掃描全文',
+    stepVerify:      'Agent 正在核驗證據',
     stepGenerate:    '正在生成摘要',
+    stepFinalize:    '正在完成摘要',
     batchPending:    '待處理',
     batchDone:       '完成',
     batchError:      '錯誤',
@@ -345,6 +361,7 @@ let modelLoadState = {
   resetProgressOverlay();
   installGlobalErrorHandlers();
   try {
+    await loadProviderCatalog();
     await loadSettings();
     applySettings(settings, { refreshModels: false });
     applyI18n();
@@ -394,7 +411,7 @@ function applyI18n() {
 
 function setModeBadgeText() {
   const el = document.getElementById('mode-badge-text');
-  if (el) el.textContent = settings.mode === 'llm' ? t('modeAI') : t('modeStandard');
+  if (el) el.textContent = normalizeMode(settings.mode) === 'ai_enhanced' ? t('modeAI') : t('modeStandard');
 }
 
 function normaliseApiKeys(apiKeys) {
@@ -429,7 +446,7 @@ function normaliseSettings(raw = {}) {
   return {
     api_key: apiKeys[provider] || '',
     api_keys: apiKeys,
-    mode: raw.mode || 'regex',
+    mode: normalizeMode(raw.mode),
     llm_provider: provider,
     llm_base_url: baseUrl,
     llm_model: model,
@@ -466,6 +483,26 @@ async function loadSettings() {
   }
 }
 
+async function loadProviderCatalog() {
+  try {
+    const response = await fetch(`${API}/api/llm/providers`);
+    if (!response.ok) return;
+    const payload = await response.json();
+    const providers = payload.providers || {};
+    Object.entries(providers).forEach(([provider, config]) => {
+      PROVIDER_CATALOG[provider] = {
+        ...getProviderConfig(provider),
+        label: config.label || getProviderConfig(provider).label,
+        baseUrl: config.baseUrl ?? getProviderConfig(provider).baseUrl,
+        requiresKey: !!config.requiresKey,
+        keyPlaceholder: config.keyPlaceholder || getProviderConfig(provider).keyPlaceholder,
+        defaultModel: config.defaultModel ?? getProviderConfig(provider).defaultModel,
+      };
+      if (!PROVIDER_ORDER.includes(provider)) PROVIDER_ORDER.push(provider);
+    });
+  } catch (_) {}
+}
+
 function applySettings(config = settings, options = {}) {
   const provider = normaliseProviderId(config.llm_provider);
   const baseUrl = getConfiguredBaseUrl(provider, config.llm_base_url);
@@ -487,8 +524,9 @@ function applySettings(config = settings, options = {}) {
   if (options.refreshModels !== false) {
     refreshProviderModels({ desiredModel: desiredModel || getDefaultModel(provider) });
   }
+  const mode = normalizeMode(config.mode);
   document.querySelectorAll('.mode-opt').forEach(el => {
-    el.classList.toggle('active', el.dataset.mode === config.mode);
+    el.classList.toggle('active', normalizeMode(el.dataset.mode) === mode);
   });
   setModeBadgeText();
   updateChatAvailability();
@@ -964,7 +1002,7 @@ async function uploadFile(file) {
   if (activeUploadController) activeUploadController.abort();
   const controller = new AbortController();
   activeUploadController = controller;
-  showProgress(t('progressAnalyse'));
+  showProgress(t('progressAnalyse'), { mode: settings.mode });
   const timeoutId = setTimeout(() => controller.abort(), 120000);
   try {
     const form = new FormData();
@@ -1506,6 +1544,7 @@ function _drawSummary(data) {
         tr.title = `Page ${cited.page} — click to view in PDF`;
         tr.addEventListener('click', () => {
           highlightPages([cited.page], cited.quote || '');
+          _showEvidenceDrawer(row, data, cited);
         });
       }
     }
@@ -1515,6 +1554,13 @@ function _drawSummary(data) {
   }
 
   container.appendChild(table);
+  if (!editMode) {
+    const drawer = document.createElement('div');
+    drawer.id = 'evidence-drawer';
+    drawer.className = 'evidence-drawer';
+    drawer.innerHTML = `<div class="evidence-empty">${escHtml(t('notDetected'))}</div>`;
+    container.appendChild(drawer);
+  }
 }
 
 function _renderRowDisplay(valueTd, row, data) {
@@ -1538,9 +1584,13 @@ function _renderRowDisplay(valueTd, row, data) {
   const pf = data[primary.src]?.[primary.key];
   const conf = pf?.confidence ?? 0;
   const flag = pf?.flag || null;
+  const sourceLabel = _sourceLabel(pf);
 
   const flagEl = flag
     ? `<span class="flag-badge" title="${escHtml(flag)}"><svg width="11" height="11"><use href="#ic-warn"/></svg> Review</span>`
+    : '';
+  const sourceEl = sourceLabel
+    ? `<span class="source-badge" title="${escHtml((pf.sources || []).join(' + ') || pf.source || '')}">${escHtml(sourceLabel)}</span>`
     : '';
   let pillEl = '';
   if (!flag && conf > 0) {
@@ -1550,7 +1600,62 @@ function _renderRowDisplay(valueTd, row, data) {
   }
 
   valueTd.style.cssText = 'display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap;';
-  valueTd.innerHTML = `<span class="field-value">${lines.join('<br>')}</span>${flagEl}${pillEl}`;
+  valueTd.innerHTML = `<span class="field-value">${lines.join('<br>')}</span>${sourceEl}${flagEl}${pillEl}`;
+}
+
+function _sourceLabel(field) {
+  if (!field) return '';
+  const sources = field.sources || (field.source ? [field.source] : []);
+  if (sources.includes('agent')) return 'Agent verified';
+  if (sources.includes('semantic_llm') && (sources.includes('rule') || sources.includes('regex'))) return 'Rule + AI';
+  if (sources.includes('semantic_llm')) return 'AI scan';
+  if (sources.includes('rule') || sources.includes('regex') || sources.includes('heuristic')) return 'Rule';
+  return field.source || '';
+}
+
+function _showEvidenceDrawer(row, data, citation) {
+  const drawer = document.getElementById('evidence-drawer');
+  if (!drawer) return;
+  const primary = row.parts[0];
+  const f = data[primary.src]?.[primary.key] || {};
+  const label = currentLang === 'zh-HK' ? row.labelZh : row.label;
+  const evidence = Array.isArray(f.evidence) && f.evidence.length
+    ? f.evidence
+    : [{ page: citation?.page, quote: citation?.quote, method: f.source || 'evidence' }];
+  const sourceText = (f.sources || (f.source ? [f.source] : []))
+    .filter(Boolean)
+    .map(_formatSourceName)
+    .join(' + ');
+  const evidenceHtml = evidence.slice(0, 4).map(ev => `
+    <div class="evidence-item">
+      <div class="evidence-meta">Page ${escHtml(String(ev.page || '—'))}${ev.method ? ` · ${escHtml(_formatSourceName(ev.method))}` : ''}${ev.chunk_id ? ` · ${escHtml(ev.chunk_id)}` : ''}</div>
+      <blockquote>${escHtml(ev.quote || '')}</blockquote>
+    </div>
+  `).join('');
+  drawer.innerHTML = `
+    <div class="evidence-head">
+      <div>
+        <div class="evidence-title">${escHtml(label)}</div>
+        <div class="evidence-value">${escHtml(f.value || '')}</div>
+      </div>
+      ${sourceText ? `<span class="source-badge">${escHtml(sourceText)}</span>` : ''}
+    </div>
+    ${evidenceHtml}
+    ${f.reason_summary ? `<div class="evidence-reason">${escHtml(f.reason_summary)}</div>` : ''}
+    ${f.trace_id ? `<div class="evidence-trace">${escHtml(f.trace_id)}</div>` : ''}
+  `;
+}
+
+function _formatSourceName(source) {
+  const key = String(source || '');
+  return ({
+    agent: 'Agent',
+    semantic_llm: 'AI scan',
+    rule: 'Rule',
+    regex: 'Regex',
+    heuristic: 'Rule',
+    computed: 'Computed',
+  })[key] || key;
 }
 
 // Return {page, quote} for the first part of `row` that has a page reference
@@ -2028,7 +2133,7 @@ async function saveSettings() {
   setProviderApiKey(provider, document.getElementById('input-apikey').value, draft);
   const baseUrl = getConfiguredBaseUrl(provider, document.getElementById('input-base-url').value);
   const model = getSelectedModelValue() || getDefaultModel(provider);
-  const mode   = document.querySelector('.mode-opt.active')?.dataset.mode || 'regex';
+  const mode = normalizeMode(document.querySelector('.mode-opt.active')?.dataset.mode || 'standard');
 
   const nextSettings = normaliseSettings({
     ...draft,
@@ -2107,8 +2212,9 @@ function showUploadScreen() {
   renderExport(null);
 }
 
-function showProgress(label) {
+function showProgress(label, options = {}) {
   document.getElementById('progress-label').textContent = label;
+  configureProgressSteps(options.mode || settings.mode);
   document.getElementById('progress-overlay').classList.add('open');
   _animateProgressSteps();
 }
@@ -2127,6 +2233,28 @@ function resetProgressOverlay() {
   if (overlay) overlay.classList.remove('open');
   _clearProgressTimers();
   document.querySelectorAll('#progress-steps .step').forEach(s => s.classList.remove('active', 'done'));
+}
+
+function configureProgressSteps(mode) {
+  const aiMode = normalizeMode(mode) !== 'standard';
+  const labels = aiMode
+    ? ['stepExtract', 'stepRule', 'stepScan', 'stepVerify', 'stepFinalize']
+    : ['stepExtract', 'stepRule', 'stepGenerate'];
+  const steps = Array.from(document.querySelectorAll('#progress-steps .step'));
+  steps.forEach((step, index) => {
+    const key = labels[index];
+    const label = step.querySelector('.step-label');
+    if (key) {
+      step.hidden = false;
+      if (label) {
+        label.dataset.i18n = key;
+        label.textContent = t(key);
+      }
+    } else {
+      step.hidden = true;
+      step.classList.remove('active', 'done');
+    }
+  });
 }
 
 function installGlobalErrorHandlers() {
@@ -2170,23 +2298,18 @@ function _clearProgressTimers() {
 
 function _animateProgressSteps() {
   _clearProgressTimers();
-  const steps = Array.from(document.querySelectorAll('#progress-steps .step'));
+  const steps = Array.from(document.querySelectorAll('#progress-steps .step:not([hidden])'));
   if (!steps.length) return;
   steps.forEach(s => s.classList.remove('active', 'done'));
   steps[0].classList.add('active');
-  // Step 1 → 2 after ~1.2s, 2 → 3 after ~2.6s. If still loading, step 3 stays active.
-  _progressTimers.push(setTimeout(() => {
-    steps[0].classList.remove('active');
-    steps[0].classList.add('done');
-    if (steps[1]) steps[1].classList.add('active');
-  }, 1200));
-  _progressTimers.push(setTimeout(() => {
-    if (steps[1]) {
-      steps[1].classList.remove('active');
-      steps[1].classList.add('done');
-    }
-    if (steps[2]) steps[2].classList.add('active');
-  }, 2600));
+  steps.slice(1).forEach((step, idx) => {
+    _progressTimers.push(setTimeout(() => {
+      const previous = steps[idx];
+      previous.classList.remove('active');
+      previous.classList.add('done');
+      step.classList.add('active');
+    }, 1100 + idx * 1300));
+  });
 }
 
 // ── Batch export ──────────────────────────────────────────────────────────────
@@ -2231,10 +2354,11 @@ function renderBatchFileList() {
 
 async function processBatch() {
   if (!batchFiles.length) return;
-  showProgress(t('progressBatch'));
+  showProgress(t('progressBatch'), { mode: settings.mode });
   try {
     const form = new FormData();
     batchFiles.forEach(item => form.append('files', item.file));
+    form.append('mode', normalizeMode(settings.mode));
     const r = await fetch(`${API}/api/batch`, { method: 'POST', body: form });
     if (!r.ok) {
       const err = await r.json().catch(() => ({}));

@@ -14,6 +14,18 @@ from lease_summary.llm_config import (
 CONFIG_PATH = Path.home() / ".opus_lease_summary" / "config.json"
 
 
+def normalize_mode(mode: str | None) -> str:
+    """Return the canonical extraction mode, preserving legacy config values."""
+    value = (mode or "").strip().lower()
+    if value == "regex":
+        return "standard"
+    if value in {"llm", "hybrid"}:
+        return "ai_enhanced"
+    if value in {"standard", "ai_enhanced", "pure_llm"}:
+        return value
+    return "standard"
+
+
 def normalise_api_keys(values: object) -> dict[str, str]:
     if not isinstance(values, dict):
         return {}
@@ -43,10 +55,13 @@ class AppState:
     field_overrides: dict = field(default_factory=dict)  # user edits: "section.key" → value
     original_filename: str = ""  # Original upload filename (e.g., for converted Word docs)
     ocr_word_data: dict | None = None  # {page_num: [(x0,y0,x1,y1,word), ...]} for OCR PDFs
+    doc_index: object = None
+    evidence_index: object = None
+    extraction_trace: object = None
 
     # Settings (persisted)
     api_keys: dict[str, str] = field(default_factory=dict)
-    mode: str = "regex"  # "regex" | "llm"
+    mode: str = "standard"  # "standard" | "ai_enhanced" | "pure_llm"
     llm_provider: str = ""
     llm_base_url: str = ""
     llm_model: str = ""
@@ -55,7 +70,7 @@ class AppState:
         if CONFIG_PATH.exists():
             try:
                 data = json.loads(CONFIG_PATH.read_text())
-                self.mode = data.get("mode", "regex")
+                self.mode = normalize_mode(data.get("mode", "standard"))
                 self.llm_provider = data.get("llm_provider", "")
                 self.llm_base_url = data.get("llm_base_url", "")
                 self.llm_model = data.get("llm_model", "")
@@ -80,7 +95,7 @@ class AppState:
         CONFIG_PATH.write_text(json.dumps({
             "api_key": self.active_api_key(),
             "api_keys": self.api_keys,
-            "mode": self.mode,
+            "mode": normalize_mode(self.mode),
             "llm_provider": self.llm_provider,
             "llm_base_url": self.llm_base_url,
             "llm_model": self.llm_model,
@@ -112,6 +127,9 @@ class AppState:
         self.field_overrides = {}
         self.original_filename = ""
         self.ocr_word_data = None
+        self.doc_index = None
+        self.evidence_index = None
+        self.extraction_trace = None
 
 
 state = AppState()
