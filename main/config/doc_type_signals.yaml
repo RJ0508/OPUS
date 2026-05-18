@@ -1,0 +1,56 @@
+# Document type detection signals for lease vs non-lease classification.
+# Used by the pipeline to decide whether an uploaded file is a lease document.
+#
+# lease_signals:      keywords that indicate the file IS a lease document
+# non_lease_signals:  keywords that indicate the file is NOT a lease document
+#
+# Detection rule:
+#   If non_lease_hits >= non_lease_threshold (default 2)
+#   AND lease_hits <= lease_threshold (default 1)
+#   → classify as "not_a_lease"
+
+lease_signals:
+  - landlord
+  - tenant
+  - lessor
+  - lessee
+  - lease
+  - tenancy
+  - let and hire
+  - demised premises
+  - rent
+  - security deposit
+
+non_lease_signals:
+  - invoice
+  - invoice no
+  - invoice date
+  - fee payable
+  - quotation
+  - receipt
+  - payment receipt
+  - floor plan
+  - site plan
+  - management accounts
+  - financial statement
+  - business registration
+  - company search
+  - writ of summons
+
+# Specific document type rules (checked in order after the basic filter)
+# Each entry: doc_type -> list of keywords (ANY match triggers the type)
+specific_types:
+  offer_to_lease:
+    - offer to lease
+  tenancy_offer_letter:
+    - tenancy offer letter
+    - offer letter
+  lease:
+    - tenancy agreement
+  signed_lease:
+    - signed lease
+    - lease agreement
+
+# Thresholds
+non_lease_threshold: 2
+lease_threshold: 1

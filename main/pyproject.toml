@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lease-summary"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.135.3",
+    "openai>=2.30.0",
+    "openpyxl>=3.1.5",
+    "pydantic>=2.12.5",
+    "pymupdf>=1.27.2.2",
+    "python-dateutil>=2.9.0.post0",
+    "python-multipart>=0.0.24",
+    "uvicorn>=0.44.0",
+    "python-docx>=1.1.2",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+lease-summary = "lease_summary.cli:main"
+lease-summary-compare = "lease_summary.compare_cli:main"
+lease-summary-v2 = "lease_summary_v2.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]

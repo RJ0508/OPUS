@@ -1,0 +1,145 @@
+# Lease Summary Field Map
+# Maps extraction fields to Excel template label-based positions.
+# Each entry: label (column B text), target_col, row_offset from label row.
+
+label_writes:
+  building_address:
+    label: "BUILDING ADDRESS"
+    col: E
+    row_offset: 0
+
+  lease_signing_date:
+    label: "LEASE SIGNING DATE"
+    col: E
+    row_offset: 0
+
+  scheduled_commencement_date:
+    label: "SCHEDULED COMMENCEMENT DATE"
+    col: E
+    row_offset: 0
+
+  lessor_name:
+    label: "LESSOR NAME / Landlord"
+    col: E
+    row_offset: 0
+
+  account_name_tenant:
+    label: "ACCOUNT NAME / Tenant"
+    col: E
+    row_offset: 0
+
+  rentable_area:
+    label: "PREMISES (Floor level & Size)"
+    col: G
+    row_offset: 0
+
+  lease_term:
+    label: "LEASE TERM"
+    col: E
+    row_offset: 0
+
+  lease_commencement_date:
+    label: "LEASE COMMENCEMENT DATE"
+    col: E
+    row_offset: 0
+
+  lease_expiry_date:
+    label: "LEASE EXPIRY DATE"
+    col: E
+    row_offset: 0
+
+  option_to_renew:
+    label: "OPTION TO RENEW"
+    col: E
+    row_offset: 0
+
+  trigger_date:
+    label: "TRIGGER DATE"
+    col: E
+    row_offset: 0
+
+  right_of_expansion:
+    label: "RIGHT OF EXPANSION"
+    col: E
+    row_offset: 0
+
+  fit_out_period:
+    label: "FIT-OUT PERIOD"
+    col: E
+    row_offset: 0
+
+  signage:
+    label: "SIGNAGE"
+    col: E
+    row_offset: 0
+
+  # Operating expenses: label_row=37, dates at row+1, amount at row+2
+  op_ex_from_date:
+    label: "OPERATING EXPENSES"
+    col: G
+    row_offset: 1
+
+  op_ex_to_date:
+    label: "OPERATING EXPENSES"
+    col: I
+    row_offset: 1
+
+  op_ex_amount:
+    label: "OPERATING EXPENSES"
+    col: F
+    row_offset: 2
+
+  tenant_termination_right:
+    label: "TENANT TERMINATION RIGHT"
+    col: E
+    row_offset: 0
+
+  # Monthly rent: label_row = psf row, label_row+1 = amount row
+  monthly_rent_psf:
+    label: "MONTHLY RENT"
+    col: F
+    row_offset: 0
+
+  monthly_rent_amount:
+    label: "MONTHLY RENT"
+    col: F
+    row_offset: 1
+
+  # Security deposit: label_row = amount row, label_row+1 = note row
+  security_deposit_amount:
+    label: "SECURITY DEPOSIT"
+    col: F
+    row_offset: 0
+
+  security_deposit_note:
+    label: "SECURITY DEPOSIT"
+    col: E
+    row_offset: 1
+
+  advance_rent:
+    label: "ADVANCE RENT"
+    col: E
+    row_offset: 0
+
+  subletting:
+    label: "SUB-LETTING"
+    col: E
+    row_offset: 0
+
+  parking:
+    label: "PARKING"
+    col: E
+    row_offset: 0
+
+  restoration_obligations:
+    label: "RESTORATION OBLIGATIONS"
+    col: E
+    row_offset: 0
+
+# Direct cell writes (row/col are fixed regardless of template version)
+direct_writes:
+  title: "B4"
+  summary_date: "C7"
+  property_type: "D8"
+  account_name: "D9"
+  address: "D10"

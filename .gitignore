@@ -1,0 +1,41 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Local environments and machine-specific settings
+.venv/
+venv/
+env/
+.env
+.env.*
+*.local
+=*
+
+# App-generated and packaged artifacts
+build/
+dist/
+output/
+tmp/
+ScreenShot/
+doc_images/
+new_doc_images/
+Opus_Lease_Summary_Assistant_User_Guide.pdf
+gen_doc*.py
+
+# Runtime/evaluation output
+main/build/
+main/dist/
+main/data/
+main/.venv/
+main/main/
+
+# Source documents and private lease examples. Keep the blank Opus template.
+files/**
+!files/
+!files/Opus Lease Summary Template - HK.xlsx

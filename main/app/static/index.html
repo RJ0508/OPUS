@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Opus Lease Summary Assistant</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css?v=2" />
+</head>
+<body>
+
+<!-- ── SVG icon sprite ───────────────────────────────────────────────────── -->
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none">
+  <!-- document-upload -->
+  <symbol id="ic-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+    <polyline points="14 2 14 8 20 8"/>
+    <line x1="12" y1="18" x2="12" y2="12"/>
+    <polyline points="9 15 12 12 15 15"/>
+  </symbol>
+  <!-- settings gear -->
+  <symbol id="ic-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="3"/>
+    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+  </symbol>
+  <!-- chat -->
+  <symbol id="ic-chat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+  </symbol>
+  <!-- send arrow -->
+  <symbol id="ic-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <line x1="22" y1="2" x2="11" y2="13"/>
+    <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+  </symbol>
+  <!-- download -->
+  <symbol id="ic-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+    <polyline points="7 10 12 15 17 10"/>
+    <line x1="12" y1="15" x2="12" y2="3"/>
+  </symbol>
+  <!-- refresh / new -->
+  <symbol id="ic-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="1 4 1 10 7 10"/>
+    <path d="M3.51 15a9 9 0 1 0 .49-3.5"/>
+  </symbol>
+  <!-- warning triangle -->
+  <symbol id="ic-warn" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+    <line x1="12" y1="9" x2="12" y2="13"/>
+    <line x1="12" y1="17" x2="12.01" y2="17"/>
+  </symbol>
+  <!-- chevron left -->
+  <symbol id="ic-prev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="15 18 9 12 15 6"/>
+  </symbol>
+  <!-- pencil / edit -->
+  <symbol id="ic-edit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+  </symbol>
+  <!-- chevron right -->
+  <symbol id="ic-next" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="9 18 15 12 9 6"/>
+  </symbol>
+  <!-- multi-document batch -->
+  <symbol id="ic-batch" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M7 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"/>
+    <path d="M14 2H10a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7z"/>
+    <polyline points="14 2 14 7 21 7"/>
+  </symbol>
+  <!-- close X -->
+  <symbol id="ic-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+    <line x1="18" y1="6" x2="6" y2="18"/>
+    <line x1="6" y1="6" x2="18" y2="18"/>
+  </symbol>
+  <!-- check -->
+  <symbol id="ic-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="20 6 9 17 4 12"/>
+  </symbol>
+  <!-- eye open -->
+  <symbol id="ic-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+    <circle cx="12" cy="12" r="3"/>
+  </symbol>
+  <!-- eye off -->
+  <symbol id="ic-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a19.5 19.5 0 0 1 5.06-5.94M9.9 4.24A10.94 10.94 0 0 1 12 4c7 0 11 8 11 8a19.5 19.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+    <line x1="1" y1="1" x2="23" y2="23"/>
+  </symbol>
+  <!-- sparkle -->
+  <symbol id="ic-sparkle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/>
+  </symbol>
+  <!-- chevron down -->
+  <symbol id="ic-chevron-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="6 9 12 15 18 9"/>
+  </symbol>
+</svg>
+
+<!-- ── Header ────────────────────────────────────────────────────────────── -->
+<header id="header">
+  <div id="header-logo">
+    <img src="/assets/logo.png" alt="Opus Property Advisers" />
+  </div>
+  <div id="header-title">
+    <h1 data-i18n="appTitle">Lease Summary Assistant</h1>
+    <span class="header-sub" data-i18n="appSubtitle">Opus Property Advisers · Hong Kong</span>
+  </div>
+  <div id="header-right">
+    <span class="badge-mode" id="mode-badge">
+      <svg class="badge-icon" width="11" height="11"><use href="#ic-sparkle"/></svg>
+      <span id="mode-badge-text">Standard</span>
+    </span>
+    <div class="header-control-group">
+      <button class="btn-lang" id="btn-lang">中文</button>
+      <button class="btn-icon" id="btn-settings" title="Settings">
+        <svg><use href="#ic-settings"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<!-- ── Main ──────────────────────────────────────────────────────────────── -->
+<div id="app">
+
+  <!-- Upload screen -->
+  <div id="upload-screen">
+    <div id="upload-hero">
+      <h2 data-i18n="heroTitle">Turn lease PDFs into Excel summaries in seconds.</h2>
+      <p data-i18n="heroSubtitle">Automatically extract 25+ key fields from commercial leases (PDF and Word) — review, edit, and export to the Opus template.</p>
+    </div>
+    <div id="mode-cards">
+      <div class="mc" id="mc-single">
+        <div class="mc-drop-overlay">
+          <svg width="36" height="36"><use href="#ic-upload"/></svg>
+          <span data-i18n="dropHere">Drop PDF or Word here</span>
+        </div>
+        <div class="mc-icon"><svg><use href="#ic-upload"/></svg></div>
+        <h3 data-i18n="reviewTitle">Review &amp; Export</h3>
+        <p data-i18n="reviewDesc">Upload a single lease PDF for interactive review, AI Q&amp;A, and Excel export.</p>
+        <button class="btn-primary" id="btn-browse" data-i18n="selectPDF">Select PDF</button>
+        <input type="file" id="file-input" accept=".pdf,.docx" style="display:none" />
+      </div>
+      <div class="mc" id="mc-batch">
+        <div class="mc-drop-overlay">
+          <svg width="36" height="36"><use href="#ic-batch"/></svg>
+          <span data-i18n="dropHereMulti">Drop PDFs or Word docs here</span>
+        </div>
+        <div class="mc-icon"><svg><use href="#ic-batch"/></svg></div>
+        <h3 data-i18n="batchTitle">Batch Export</h3>
+        <p data-i18n="batchDesc">Upload one or more lease PDFs and download Excel summaries in one go.</p>
+        <button class="btn-primary" id="btn-batch-browse" data-i18n="selectPDFs">Select PDFs</button>
+        <input type="file" id="batch-file-input" accept=".pdf,.docx" multiple style="display:none" />
+      </div>
+    </div>
+    <div id="batch-area">
+      <div id="batch-file-list"></div>
+      <div id="batch-actions">
+        <button class="btn-secondary" id="btn-batch-add" data-i18n="addMore">+ Add More</button>
+        <button class="btn-primary" id="btn-batch-run">
+          <svg width="16" height="16"><use href="#ic-download"/></svg>
+          <span data-i18n="exportAll">Export All &amp; Download</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Workspace -->
+  <div id="workspace">
+
+    <!-- PDF panel -->
+    <div id="pdf-panel">
+      <div id="pdf-toolbar">
+        <button id="btn-prev" title="Previous page">
+          <svg><use href="#ic-prev"/></svg>
+        </button>
+        <span id="pdf-page-info">— / —</span>
+        <button id="btn-next" title="Next page">
+          <svg><use href="#ic-next"/></svg>
+        </button>
+        <div class="toolbar-sep"></div>
+        <button id="btn-zoom-out" title="Zoom out">−</button>
+        <span id="zoom-level">100%</span>
+        <button id="btn-zoom-in" title="Zoom in">+</button>
+        <div class="toolbar-sep"></div>
+        <span id="pdf-filename"></span>
+        <button id="btn-new-lease" title="Load another lease">
+          <svg><use href="#ic-refresh"/></svg> <span data-i18n="newLease">New</span>
+        </button>
+      </div>
+      <div id="pdf-viewport"></div>
+    </div>
+
+    <!-- Resize handle -->
+    <div id="resize-handle"></div>
+
+    <!-- Right panel -->
+    <div id="right-panel">
+      <div id="tabs">
+        <button class="tab-btn active" data-tab="summary" data-i18n="tabSummary">Summary</button>
+        <button class="tab-btn" data-tab="chat" data-i18n="tabChat">Chat</button>
+        <button class="tab-btn" data-tab="export" data-i18n="tabExport">Export</button>
+      </div>
+
+      <!-- Summary tab -->
+      <div class="tab-content active" id="tab-summary"></div>
+
+      <!-- Chat tab -->
+      <div class="tab-content" id="tab-chat">
+        <div id="chat-messages">
+          <div class="chat-empty" id="chat-empty">
+            <svg class="empty-icon"><use href="#ic-chat"/></svg>
+            <p class="chat-empty-msg" data-i18n="chatEmptyMsg">Ask anything about this lease — dates, clauses, financials.</p>
+            <div class="chat-suggestions" id="chat-suggestions"></div>
+          </div>
+        </div>
+        <div id="chat-no-key-banner" class="chat-no-key" style="display:none">
+          <svg width="14" height="14" style="vertical-align:-2px"><use href="#ic-warn"/></svg>
+          <span data-i18n="chatNoKey">Configure an LLM provider in Settings to enable AI Q&amp;A.</span>
+        </div>
+        <div id="chat-input-row">
+          <textarea id="chat-input" rows="1" placeholder="Ask about this lease…" data-i18n-placeholder="chatPlaceholder" disabled></textarea>
+          <button id="chat-send" disabled>
+            <svg><use href="#ic-send"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Export tab -->
+      <div class="tab-content" id="tab-export">
+        <div id="export-content"></div>
+      </div>
+
+    </div><!-- /right-panel -->
+  </div><!-- /workspace -->
+</div><!-- /app -->
+
+<!-- ── Settings modal ────────────────────────────────────────────────────── -->
+<div id="modal-overlay">
+  <div id="modal">
+    <h2 data-i18n="settingsTitle">Settings</h2>
+    <div class="form-group">
+      <label data-i18n="providerLabel">LLM Provider</label>
+      <select id="input-provider"></select>
+      <span class="form-hint" data-i18n="providerHint">OpenAI-compatible providers only. Choose the backend for AI clause extraction and Q&amp;A.</span>
+    </div>
+    <div class="form-group">
+      <label data-i18n="apiKeyLabel">LLM API Key</label>
+      <div class="input-with-action">
+        <input type="password" id="input-apikey" placeholder="sk-…" autocomplete="off" />
+      </div>
+      <span class="form-hint" data-i18n="apiKeyHint">Required for remote providers. Leave blank for LM Studio, Ollama, or localhost URLs.</span>
+    </div>
+    <div class="form-group">
+      <label data-i18n="baseUrlLabel">Base URL</label>
+      <input type="text" id="input-base-url" placeholder="http://127.0.0.1:1234/v1" autocomplete="off" />
+      <span class="form-hint" data-i18n="baseUrlHint">Defaults to the provider&apos;s official endpoint. Edit only if you need a custom OpenAI-compatible URL.</span>
+    </div>
+    <div class="form-group">
+      <div class="label-with-action">
+        <label data-i18n="modelLabel">Model</label>
+        <button type="button" class="btn-inline-action" id="btn-refresh-models" data-i18n="reloadModels">Reload</button>
+      </div>
+      <select id="input-model"></select>
+      <input type="text" id="input-model-custom" class="is-hidden" autocomplete="off" />
+      <span class="form-hint" data-i18n="modelHint">Choose a provider model or enter a custom model ID.</span>
+      <span class="form-meta" id="model-source-note"></span>
+    </div>
+    <div class="form-group">
+      <label data-i18n="modeLabel">Analysis Mode</label>
+      <div class="mode-toggle">
+        <div class="mode-opt active" data-mode="regex" data-i18n="modeStandard">Standard</div>
+        <div class="mode-opt" data-mode="llm" data-i18n="modeAI">AI Enhanced</div>
+      </div>
+      <span class="form-hint" data-i18n="modeHint">AI Enhanced uses your configured provider to improve clause extraction.</span>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-secondary" id="btn-modal-cancel" data-i18n="modalCancel">Cancel</button>
+      <button class="btn-primary" id="btn-modal-save" data-i18n="modalSave">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Progress overlay ───────────────────────────────────────────────────── -->
+<div id="progress-overlay">
+  <div id="progress-card">
+    <div class="spinner"></div>
+    <div id="progress-label">Analysing lease…</div>
+    <ol id="progress-steps">
+      <li class="step" data-step="1">
+        <span class="step-marker"><svg width="12" height="12"><use href="#ic-check"/></svg></span>
+        <span class="step-label" data-i18n="stepExtract">Extracting text</span>
+      </li>
+      <li class="step" data-step="2">
+        <span class="step-marker"><svg width="12" height="12"><use href="#ic-check"/></svg></span>
+        <span class="step-label" data-i18n="stepAnalyse">Detecting fields</span>
+      </li>
+      <li class="step" data-step="3">
+        <span class="step-marker"><svg width="12" height="12"><use href="#ic-check"/></svg></span>
+        <span class="step-label" data-i18n="stepGenerate">Generating summary</span>
+      </li>
+    </ol>
+  </div>
+</div>
+
+<!-- ── Toast container ────────────────────────────────────────────────────── -->
+<div id="toast-container"></div>
+
+<!-- PDF.js -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>
+  pdfjsLib.GlobalWorkerOptions.workerSrc =
+    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+</script>
+<script src="/js/app.js?v=2"></script>
+</body>
+</html>
