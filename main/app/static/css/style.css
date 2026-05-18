@@ -594,6 +594,23 @@ html, body {
   align-items: center;
   gap: 4px;
 }
+.engine-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: 12px;
+  padding: 2px 8px;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #28506B;
+  background: #EEF4F9;
+  border: 1px solid #C9DAE6;
+}
+.engine-badge.warn {
+  color: var(--warn-color);
+  background: var(--warn-bg);
+  border-color: var(--warn-border);
+}
 
 /* Section headers within grouped summary */
 .summary-section {
@@ -1303,6 +1320,30 @@ html, body {
   font-weight: 600;
   color: var(--green-deep);
 }
+#progress-bar {
+  width: 100%;
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--green-light);
+  border: 1px solid var(--green-border);
+}
+#progress-bar-fill {
+  display: block;
+  width: 0%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--green);
+  transition: width .25s ease;
+}
+#progress-detail {
+  min-height: 16px;
+  max-width: 360px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.35;
+  text-align: center;
+}
 
 /* Multi-step indicator */
 #progress-steps {
@@ -1553,6 +1594,8 @@ html, body {
 .toast.toast-out { animation: toast-out .25s ease-in forwards; }
 .toast-error { border-left-color: var(--error-color); }
 .toast-error .toast-icon { color: var(--error-color); }
+.toast-warn { border-left-color: var(--warn-color); }
+.toast-warn .toast-icon { color: var(--warn-color); }
 .toast-success { border-left-color: var(--success-color); }
 .toast-success .toast-icon { color: var(--success-color); }
 .toast-info .toast-icon { color: var(--green); }

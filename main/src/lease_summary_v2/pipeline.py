@@ -5,7 +5,7 @@ import datetime
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from lease_summary.doc_type import detect_doc_type
 from lease_summary.llm_config import build_openai_client
@@ -36,6 +36,7 @@ def run(
     output_dir: str | Path | None = None,
     template_path: str | Path | None = None,
     extraction_mode: str | None = None,
+    progress_callback: Callable[..., None] | None = None,
 ) -> dict[str, Path]:
     """
     Full pipeline: PDF -> LeaseSummary -> Excel + JSON outputs.
@@ -54,22 +55,30 @@ def run(
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = input_pdf.stem
 
-    trace = ExtractionTrace(mode=extraction_mode, file_name=input_pdf.name)
+    trace = ExtractionTrace(
+        mode=extraction_mode,
+        requested_mode=extraction_mode,
+        effective_mode=extraction_mode,
+        file_name=input_pdf.name,
+    )
     timer = TraceTimer(trace)
     validate_input_file(input_pdf, trace)
 
     # ── Step 1: Extract text ────────────────────────────────────────────────────
+    _emit(progress_callback, "extract", "Extracting text", 8)
     doc_text = extract_text(input_pdf)
     trace.parser_backend = doc_text.extraction_backend
     trace.ocr_used = doc_text.parsed_with_ocr
     validate_document_text(doc_text, trace)
 
     # ── Step 2: Split into sections ─────────────────────────────────────────────
+    _emit(progress_callback, "extract", "Building document index", 18)
     sections = split(doc_text)
     doc_index = build_document_index(doc_text, sections)
     trace.chunks_count = len(doc_index.chunks)
 
     # ── Step 3: Detect document type ────────────────────────────────────────────
+    _emit(progress_callback, "rule", "Detecting document type", 26)
     doc_type = _detect_doc_type(sections.principal_terms)
 
     if doc_type == "not_a_lease":
@@ -83,6 +92,7 @@ def run(
         summary = _empty_summary(input_pdf.name, doc_type, doc_text)
         rule_candidates: list[FieldCandidate] = []
     else:
+        _emit(progress_callback, "rule", "Running Rule/Regex extraction", 36)
         summary, rule_candidates = run_rule_scanners(
             doc_text,
             sections,
@@ -97,23 +107,32 @@ def run(
     if extraction_mode == "standard":
         _sync_break_clause(summary)
     elif legacy_ai:
+        _emit(progress_callback, "scan", "Running legacy AI extraction", 62)
         ai_primary_extract(summary, doc_text, sections, pure_llm=pure_llm)
         _sync_break_clause(summary)
     else:
+        _emit(progress_callback, "scan", "Scanning full document with AI", 44)
         llm_client, llm_settings = build_openai_client(
             "https://api.moonshot.cn/v1",
             "kimi-k2.5",
             default_provider="moonshot",
         )
         llm_model = llm_settings.model if llm_settings else None
+        if llm_settings is not None:
+            trace.provider = llm_settings.provider
+            trace.model = llm_settings.model
+        else:
+            trace.warnings.append("LLM client unavailable; Rule/Regex candidates remain in use.")
         semantic_candidates = semantic_scan_document(
             doc_index,
             FIELD_SPECS,
             client=llm_client,
             model=llm_model,
+            progress_callback=progress_callback,
         )
         trace.semantic_candidates_count = len(semantic_candidates)
         if semantic_candidates:
+            _emit(progress_callback, "verify", "Agent verifying evidence", 80)
             enhanced = run_enhancement_agent(
                 doc_index=doc_index,
                 current_summary=summary,
@@ -126,14 +145,22 @@ def run(
             summary = _apply_agent_decisions(summary, enhanced.decisions, trace.run_id)
         elif pure_llm:
             summary = assemble_summary_from_candidates(summary, semantic_candidates, trace_id=trace.run_id)
+        else:
+            trace.effective_mode = "ai_enhanced_rule_fallback"
+            trace.fallback_reason = (
+                "AI scan returned no evidence-backed candidates; Rule/Regex extraction is shown."
+            )
+            trace.warnings.append(trace.fallback_reason)
         _sync_break_clause(summary)
 
     # ── Step 5: Validate ────────────────────────────────────────────────────────
+    _emit(progress_callback, "finalize", "Validating extracted fields", 90)
     validate_mandatory(summary)
     validate_business_rules(summary)
     timer.finish()
 
     # ── Step 6: Write outputs ───────────────────────────────────────────────────
+    _emit(progress_callback, "finalize", "Writing summary files", 96)
     excel_path = output_dir / f"{stem}.summary.xlsx"
     json_path = output_dir / f"{stem}.extraction.json"
     review_path = output_dir / f"{stem}.review.json"
@@ -171,6 +198,17 @@ def _normalize_extraction_mode(mode: str) -> str:
     if raw in {"llm", "ai", "hybrid", "ai_enhanced", "enhanced"}:
         return "ai_enhanced"
     return "ai_enhanced"
+
+
+def _emit(
+    progress_callback: Callable[..., None] | None,
+    step: str,
+    label: str,
+    percent: int,
+    **extra,
+) -> None:
+    if progress_callback is not None:
+        progress_callback(step, label, percent=percent, **extra)
 
 
 def _empty_summary(input_name: str, doc_type: str, doc_text) -> LeaseSummary:

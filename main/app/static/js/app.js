@@ -219,6 +219,11 @@ const TRANSLATIONS = {
     stepVerify:      'Agent verifying evidence',
     stepGenerate:    'Generating summary',
     stepFinalize:    'Finalizing summary',
+    engineLabel:     'Engine',
+    engineStandard:  'Standard Rule/Regex',
+    engineAI:        'AI Enhanced',
+    enginePureAI:    'Pure AI',
+    engineRuleFallback:'Rule/Regex fallback',
     // batch status
     batchPending:    'Pending',
     batchDone:       'Done',
@@ -323,6 +328,11 @@ const TRANSLATIONS = {
     stepVerify:      'Agent 正在核驗證據',
     stepGenerate:    '正在生成摘要',
     stepFinalize:    '正在完成摘要',
+    engineLabel:     '引擎',
+    engineStandard:  '標準規則/Regex',
+    engineAI:        'AI 增強',
+    enginePureAI:    '純 AI',
+    engineRuleFallback:'規則/Regex 備援',
     batchPending:    '待處理',
     batchDone:       '完成',
     batchError:      '錯誤',
@@ -353,6 +363,8 @@ let ocrWordData   = null;  // {pages: {pageNum: [[x0,y0,x1,y1,word], ...]}} for 
 let currentLang = localStorage.getItem('opus_lang') || 'en';
 let activeUploadController = null;
 let _progressTimers = [];
+let progressSource = null;
+let activeProgressRunId = '';
 let eventsBound = false;
 let modelRequestSeq = 0;
 let activeModelController = null;
@@ -596,7 +608,7 @@ function sanitizeModelForProvider(providerId, model, baseUrl) {
   if (!value) return '';
   if (provider === 'custom' && !baseUrl) return '';
   if (
-    ['custom', 'lmstudio', 'ollama'].includes(provider)
+    ['lmstudio', 'ollama'].includes(provider)
     && (isKnownModelForDifferentProvider(provider, value) || isMoonshotModelId(value))
   ) {
     return '';
@@ -1010,11 +1022,15 @@ async function uploadFile(file) {
   if (activeUploadController) activeUploadController.abort();
   const controller = new AbortController();
   activeUploadController = controller;
-  showProgress(t('progressAnalyse'), { mode: settings.mode });
+  const runId = `web_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  activeProgressRunId = runId;
+  showProgress(t('progressAnalyse'), { mode: settings.mode, streaming: true });
+  startProgressStream(runId);
   const timeoutId = setTimeout(() => controller.abort(), 120000);
   try {
     const form = new FormData();
     form.append('file', file);
+    form.append('progress_run_id', runId);
     const r = await fetch(`${API}/api/upload`, {
       method: 'POST',
       body: form,
@@ -1041,6 +1057,9 @@ async function uploadFile(file) {
     renderExport(summaryData);
     renderChatSuggestions();
     updateChatAvailability();
+    if (summaryData.engine?.fallback_reason) {
+      showToast(summaryData.engine.fallback_reason, 'warn', 9000);
+    }
   } catch (err) {
     const message = err.name === 'AbortError'
       ? 'Analysis timed out. Please try Standard mode or check the configured AI provider.'
@@ -1491,8 +1510,12 @@ function _drawSummary(data) {
 
   const info = document.createElement('div');
   info.className = 'summary-meta-info';
+  const engine = data.engine || {};
+  const engineLabel = _engineLabel(engine);
+  const fallbackReason = engine.fallback_reason || '';
   info.innerHTML = `<span><b>${t('metaType')}:</b> ${fmt(doc.type)}</span>
     <span><b>${t('metaPages')}:</b> ${doc.pages}</span>
+    ${engineLabel ? `<span class="engine-badge${fallbackReason ? ' warn' : ''}" title="${escHtml(fallbackReason || _engineTitle(engine))}"><b>${t('engineLabel')}:</b> ${escHtml(engineLabel)}</span>` : ''}
     ${doc.ocr ? `<span class="ocr-badge"><svg width="11" height="11"><use href="#ic-warn"/></svg> OCR</span>` : ''}`;
 
   const actions = document.createElement('div');
@@ -1620,6 +1643,9 @@ function _renderTrace(trace) {
     <div class="trace-grid">
       <div><b>Run</b><span>${escHtml(trace.run_id || '')}</span></div>
       <div><b>Mode</b><span>${escHtml(trace.mode || '')}</span></div>
+      <div><b>Effective</b><span>${escHtml(trace.effective_mode || trace.mode || '')}</span></div>
+      <div><b>Provider</b><span>${escHtml(trace.provider || '')}</span></div>
+      <div><b>Model</b><span>${escHtml(trace.model || '')}</span></div>
       <div><b>Pages</b><span>${escHtml(String(trace.pages_count || 0))}</span></div>
       <div><b>Chunks</b><span>${escHtml(String(trace.chunks_count || 0))}</span></div>
       <div><b>Rule candidates</b><span>${escHtml(String(trace.rule_candidates_count || 0))}</span></div>
@@ -1627,9 +1653,29 @@ function _renderTrace(trace) {
       <div><b>Final decisions</b><span>${escHtml(String(trace.final_decisions_count || 0))}</span></div>
       <div><b>Latency</b><span>${escHtml(String(trace.latency_ms || 0))} ms</span></div>
     </div>
+    ${trace.fallback_reason ? `<div class="trace-empty">${escHtml(trace.fallback_reason)}</div>` : ''}
     ${warnings ? `<ul class="trace-warnings">${warnings}</ul>` : ''}
     <div class="trace-calls">${callRows}</div>
   `;
+}
+
+function _engineLabel(engine = {}) {
+  const effective = String(engine.effective_mode || engine.requested_mode || '').toLowerCase();
+  if (!effective) return '';
+  if (effective.includes('fallback')) return t('engineRuleFallback');
+  if (effective === 'ai_enhanced') return t('engineAI');
+  if (effective === 'pure_llm') return t('enginePureAI');
+  if (effective === 'standard') return t('engineStandard');
+  return effective.replace(/_/g, ' ');
+}
+
+function _engineTitle(engine = {}) {
+  const parts = [];
+  if (engine.requested_mode) parts.push(`requested: ${engine.requested_mode}`);
+  if (engine.effective_mode) parts.push(`actual: ${engine.effective_mode}`);
+  if (engine.provider) parts.push(`provider: ${engine.provider}`);
+  if (engine.model) parts.push(`model: ${engine.model}`);
+  return parts.join(' · ');
 }
 
 function _renderRowDisplay(valueTd, row, data) {
@@ -1678,7 +1724,8 @@ function _sourceLabel(field) {
   if (sources.includes('agent')) return 'Agent verified';
   if (sources.includes('semantic_llm') && (sources.includes('rule') || sources.includes('regex'))) return 'Rule + AI';
   if (sources.includes('semantic_llm')) return 'AI scan';
-  if (sources.includes('rule') || sources.includes('regex') || sources.includes('heuristic')) return 'Rule';
+  if (sources.includes('regex')) return 'Regex';
+  if (sources.includes('rule') || sources.includes('heuristic')) return 'Rule/Regex';
   return field.source || '';
 }
 
@@ -1722,7 +1769,7 @@ function _formatSourceName(source) {
     semantic_llm: 'AI scan',
     rule: 'Rule',
     regex: 'Regex',
-    heuristic: 'Rule',
+    heuristic: 'Rule/Regex',
     computed: 'Computed',
   })[key] || key;
 }
@@ -2149,6 +2196,7 @@ function showToast(message, type = 'info', duration = 5000) {
   const toast = document.createElement('div');
   toast.className = `toast toast-${type}`;
   const iconId = type === 'error'   ? '#ic-warn'
+              : type === 'warn'    ? '#ic-warn'
               : type === 'success' ? '#ic-check'
               : '#ic-chat';
   toast.innerHTML = `
@@ -2283,44 +2331,67 @@ function showUploadScreen() {
 
 function showProgress(label, options = {}) {
   document.getElementById('progress-label').textContent = label;
+  const detail = document.getElementById('progress-detail');
+  if (detail) detail.textContent = '';
   configureProgressSteps(options.mode || settings.mode);
+  setProgressPercent(0);
   document.getElementById('progress-overlay').classList.add('open');
-  _animateProgressSteps();
+  if (options.streaming) {
+    setProgressStep('extract');
+  } else {
+    _animateProgressSteps();
+  }
 }
 
 function hideProgress() {
   document.getElementById('progress-overlay').classList.remove('open');
+  closeProgressStream();
   _clearProgressTimers();
   // Reset step states for next time
   document.querySelectorAll('#progress-steps .step').forEach(s => s.classList.remove('active', 'done'));
+  setProgressPercent(0);
 }
 
 function resetProgressOverlay() {
   activeUploadController?.abort();
   activeUploadController = null;
+  closeProgressStream();
   const overlay = document.getElementById('progress-overlay');
   if (overlay) overlay.classList.remove('open');
   _clearProgressTimers();
   document.querySelectorAll('#progress-steps .step').forEach(s => s.classList.remove('active', 'done'));
+  setProgressPercent(0);
 }
 
 function configureProgressSteps(mode) {
   const aiMode = normalizeMode(mode) !== 'standard';
-  const labels = aiMode
-    ? ['stepExtract', 'stepRule', 'stepScan', 'stepVerify', 'stepFinalize']
-    : ['stepExtract', 'stepRule', 'stepGenerate'];
+  const stepDefs = aiMode
+    ? [
+        { key: 'extract', label: 'stepExtract' },
+        { key: 'rule', label: 'stepRule' },
+        { key: 'scan', label: 'stepScan' },
+        { key: 'verify', label: 'stepVerify' },
+        { key: 'finalize', label: 'stepFinalize' },
+      ]
+    : [
+        { key: 'extract', label: 'stepExtract' },
+        { key: 'rule', label: 'stepRule' },
+        { key: 'finalize', label: 'stepGenerate' },
+      ];
   const steps = Array.from(document.querySelectorAll('#progress-steps .step'));
   steps.forEach((step, index) => {
-    const key = labels[index];
+    const stepDef = stepDefs[index];
     const label = step.querySelector('.step-label');
-    if (key) {
+    if (stepDef) {
       step.hidden = false;
+      step.dataset.progressKey = stepDef.key;
       if (label) {
-        label.dataset.i18n = key;
-        label.textContent = t(key);
+        label.dataset.i18n = stepDef.label;
+        label.textContent = t(stepDef.label);
       }
     } else {
       step.hidden = true;
+      step.dataset.progressKey = '';
       step.classList.remove('active', 'done');
     }
   });
@@ -2378,6 +2449,64 @@ function _animateProgressSteps() {
       previous.classList.add('done');
       step.classList.add('active');
     }, 1100 + idx * 1300));
+  });
+}
+
+function startProgressStream(runId) {
+  closeProgressStream();
+  if (!window.EventSource || !runId) return;
+  progressSource = new EventSource(`${API}/api/progress/stream?run_id=${encodeURIComponent(runId)}`);
+  progressSource.onmessage = event => {
+    try {
+      updateProgressFromEvent(JSON.parse(event.data));
+    } catch (_) {}
+  };
+  progressSource.onerror = () => {
+    // The upload request remains authoritative. Keep the overlay visible if SSE
+    // drops; the fetch error/success path will close it.
+  };
+}
+
+function closeProgressStream() {
+  if (progressSource) {
+    progressSource.close();
+    progressSource = null;
+  }
+}
+
+function updateProgressFromEvent(event) {
+  if (!event || (activeProgressRunId && event.run_id && event.run_id !== activeProgressRunId)) return;
+  if (event.label) {
+    const label = document.getElementById('progress-label');
+    if (label) label.textContent = event.label;
+  }
+  const detail = document.getElementById('progress-detail');
+  if (detail) detail.textContent = event.detail || '';
+  if (event.percent !== null && event.percent !== undefined) {
+    setProgressPercent(event.percent);
+  }
+  setProgressStep(event.step || 'finalize', event.status || event.type);
+  if (event.type === 'done' || event.type === 'error') {
+    closeProgressStream();
+  }
+}
+
+function setProgressPercent(percent) {
+  const value = Math.max(0, Math.min(100, Number(percent) || 0));
+  const fill = document.getElementById('progress-bar-fill');
+  const bar = document.getElementById('progress-bar');
+  if (fill) fill.style.width = `${value}%`;
+  if (bar) bar.setAttribute('aria-valuenow', String(Math.round(value)));
+}
+
+function setProgressStep(stepKey, status = 'active') {
+  const steps = Array.from(document.querySelectorAll('#progress-steps .step:not([hidden])'));
+  if (!steps.length) return;
+  const index = steps.findIndex(step => step.dataset.progressKey === stepKey);
+  const activeIndex = index >= 0 ? index : steps.length - 1;
+  steps.forEach((step, i) => {
+    step.classList.toggle('done', i < activeIndex || status === 'done');
+    step.classList.toggle('active', i === activeIndex && status !== 'done');
   });
 }
 

@@ -289,6 +289,10 @@
   <div id="progress-card">
     <div class="spinner"></div>
     <div id="progress-label">Analysing lease…</div>
+    <div id="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+      <span id="progress-bar-fill"></span>
+    </div>
+    <div id="progress-detail"></div>
     <ol id="progress-steps">
       <li class="step" data-step="1">
         <span class="step-marker"><svg width="12" height="12"><use href="#ic-check"/></svg></span>
@@ -323,6 +327,6 @@
   pdfjsLib.GlobalWorkerOptions.workerSrc =
     'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 </script>
-<script src="/js/app.js?v=6"></script>
+<script src="/js/app.js?v=7"></script>
 </body>
 </html>

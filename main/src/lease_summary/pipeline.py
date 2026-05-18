@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime
 import os
 from pathlib import Path
+from typing import Callable
 
 from .config import TEMPLATE_PATH, DEFAULT_OUTPUT_DIR
 from .doc_type import detect_doc_type
@@ -28,6 +29,7 @@ def run(
     template_path: str | Path | None = None,
     use_ai: bool = False,
     extraction_mode: str | None = None,
+    progress_callback: Callable[..., None] | None = None,
 ) -> dict[str, Path]:
     """
     Full pipeline: PDF -> LeaseSummary -> Excel + JSON outputs.
@@ -44,12 +46,15 @@ def run(
     stem = input_pdf.stem
 
     # ── Step 1: Extract text ────────────────────────────────────────────────────
+    _emit(progress_callback, "extract", "Extracting text", 8)
     doc_text = extract_text(input_pdf)
 
     # ── Step 2: Split into sections ─────────────────────────────────────────────
+    _emit(progress_callback, "extract", "Splitting document into sections", 20)
     sections = split(doc_text)
 
     # ── Step 3: Detect document type ────────────────────────────────────────────
+    _emit(progress_callback, "rule", "Detecting document type", 30)
     doc_type = detect_doc_type(sections.principal_terms)
 
     if doc_type == "not_a_lease":
@@ -72,6 +77,7 @@ def run(
     )
 
     if not pure_llm:
+        _emit(progress_callback, "rule", "Running Rule/Regex extraction", 45)
         summary.parties = extract_parties(doc_text, sections)
         summary.premises = extract_premises(doc_text, sections)
         summary.term = extract_term(doc_text, sections)
@@ -82,13 +88,16 @@ def run(
     # The standard pipeline is intentionally regex-only by default.  The desktop
     # app selects lease_summary_v2 for AI-enhanced mode.
     if use_ai or pure_llm:
+        _emit(progress_callback, "scan", "Running legacy AI extraction", 70)
         ai_primary_extract(summary, doc_text, sections, pure_llm=pure_llm)
 
     # ── Step 5: Validate ────────────────────────────────────────────────────────
+    _emit(progress_callback, "finalize", "Validating extracted fields", 82)
     validate_mandatory(summary)
     validate_business_rules(summary)
 
     # ── Step 6: Write outputs ───────────────────────────────────────────────────
+    _emit(progress_callback, "finalize", "Writing summary files", 94)
     excel_path = output_dir / f"{stem}.summary.xlsx"
     json_path = output_dir / f"{stem}.extraction.json"
     review_path = output_dir / f"{stem}.review.json"
@@ -104,6 +113,18 @@ def run(
         "summary": summary,
         "doc_text": doc_text,
     }
+
+
+def _emit(
+    progress_callback: Callable[..., None] | None,
+    step: str,
+    label: str,
+    percent: int,
+    **extra,
+) -> None:
+    if progress_callback is not None:
+        progress_callback(step, label, percent=percent, **extra)
+
 
 def _detect_doc_type(text: str) -> str:
     """Compatibility wrapper for tests/imports that still reference this helper."""

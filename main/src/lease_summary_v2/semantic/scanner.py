@@ -24,6 +24,7 @@ def semantic_scan_document(
     client=None,
     model: str | None = None,
     scan_chunk_fn: ScanChunkFn | None = None,
+    progress_callback: Callable[..., None] | None = None,
 ) -> list[FieldCandidate]:
     """Scan every document chunk and return candidates with verbatim evidence."""
     fields = fields or FIELD_SPECS
@@ -39,7 +40,16 @@ def semantic_scan_document(
             return []
 
     candidates: list[FieldCandidate] = []
-    for chunk in doc_index.chunks:
+    total_chunks = max(len(doc_index.chunks), 1)
+    for index, chunk in enumerate(doc_index.chunks, start=1):
+        if progress_callback is not None:
+            progress_callback(
+                "scan",
+                "Scanning full document with AI",
+                percent=44 + int((index - 1) / total_chunks * 30),
+                detail=f"Chunk {index}/{total_chunks} · pages {chunk.page_start}-{chunk.page_end}",
+                chunk_id=chunk.chunk_id,
+            )
         findings = (
             scan_chunk_fn(chunk, fields)
             if scan_chunk_fn is not None
@@ -49,6 +59,13 @@ def semantic_scan_document(
             candidate = _finding_to_candidate(finding, chunk)
             if candidate is not None:
                 candidates.append(candidate)
+    if progress_callback is not None:
+        progress_callback(
+            "scan",
+            "Completed full-document AI scan",
+            percent=74,
+            detail=f"{len(candidates)} evidence-backed AI candidates",
+        )
     return candidates
 
 

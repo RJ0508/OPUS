@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+import os
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -246,6 +247,98 @@ def test_trace_endpoint_serialises_current_trace():
 
     assert payload["run_id"] == trace.run_id
     assert payload["mode"] == "ai_enhanced"
+
+
+def test_progress_events_are_run_scoped():
+    run_id = main_module._reset_progress("ai_enhanced", "test_progress_run")
+    main_module._publish_progress("rule", "Running Rule/Regex extraction", percent=40, run_id=run_id)
+    events, done = main_module._progress_events_since(run_id, 0)
+
+    assert done is False
+    assert [event["step"] for event in events] == ["extract", "rule"]
+    assert events[-1]["percent"] == 40
+    assert main_module._progress_events_since("other_run", 0) == ([], False)
+
+
+def test_ai_mode_without_llm_reports_rule_regex_fallback(monkeypatch, tmp_path):
+    import lease_summary.pipeline as standard_pipeline
+    from lease_summary.models import Evidence as V1Evidence
+    from lease_summary.models import ExtractionMethod as V1Method
+    from lease_summary.models import ExtractionResult as V1Result
+    from lease_summary.models import LeaseSummary as V1Summary
+
+    original = {
+        "mode": main_module.state.mode,
+        "provider": main_module.state.llm_provider,
+        "model": main_module.state.llm_model,
+        "api_keys": dict(main_module.state.api_keys),
+        "summary": main_module.state.summary,
+        "excel_path": main_module.state.excel_path,
+        "doc_index": main_module.state.doc_index,
+        "evidence_index": main_module.state.evidence_index,
+        "extraction_trace": main_module.state.extraction_trace,
+        "ocr_word_data": main_module.state.ocr_word_data,
+        "engine_info": dict(main_module.state.engine_info),
+    }
+    env_keys = [
+        "LLM_API_KEY",
+        "LLM_PROVIDER",
+        "LLM_BASE_URL",
+        "LLM_MODEL",
+        "MOONSHOT_API_KEY",
+        "MOONSHOT_BASE_URL",
+        "MOONSHOT_MODEL",
+    ]
+    original_env = {key: os.environ.get(key) for key in env_keys}
+    pdf_path = tmp_path / "lease.pdf"
+    pdf_path.write_text("lease", encoding="utf-8")
+    excel_path = tmp_path / "lease.xlsx"
+
+    def fake_run(_path, *, output_dir, progress_callback=None, **_kwargs):
+        if progress_callback:
+            progress_callback("rule", "Running Rule/Regex extraction", percent=50)
+        summary = V1Summary()
+        summary.document_meta.source_filename = "lease.pdf"
+        summary.document_meta.pages = 1
+        summary.parties.tenant_name = V1Result(
+            value="Regex Tenant",
+            confidence=0.8,
+            evidence=[V1Evidence(page=1, quote="Regex Tenant", method=V1Method.regex)],
+        )
+        excel_path.touch()
+        return {"summary": summary, "excel": excel_path, "doc_text": None}
+
+    try:
+        main_module.state.mode = "ai_enhanced"
+        main_module.state.llm_provider = "moonshot"
+        main_module.state.llm_model = "kimi-k2.6"
+        main_module.state.api_keys = {}
+        monkeypatch.setattr(standard_pipeline, "run", fake_run)
+        monkeypatch.setattr(main_module, "_refresh_qa_engine", lambda **_kwargs: None)
+
+        payload = main_module._run_extraction(pdf_path, lambda *_args, **_kwargs: None)
+    finally:
+        main_module.state.mode = original["mode"]
+        main_module.state.llm_provider = original["provider"]
+        main_module.state.llm_model = original["model"]
+        main_module.state.api_keys = original["api_keys"]
+        main_module.state.summary = original["summary"]
+        main_module.state.excel_path = original["excel_path"]
+        main_module.state.doc_index = original["doc_index"]
+        main_module.state.evidence_index = original["evidence_index"]
+        main_module.state.extraction_trace = original["extraction_trace"]
+        main_module.state.ocr_word_data = original["ocr_word_data"]
+        main_module.state.engine_info = original["engine_info"]
+        for key, value in original_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    assert payload["engine"]["effective_mode"] == "standard_regex_fallback"
+    assert "API key" in payload["engine"]["fallback_reason"]
+    assert payload["parties"]["tenant_name"]["source"] == "regex"
+    assert payload["parties"]["tenant_name"]["sources"] == ["regex"]
 
 
 def test_ocr_word_api_and_serialised_evidence_support_highlight():

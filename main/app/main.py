@@ -7,9 +7,12 @@ import json
 import os
 import shutil
 import tempfile
+import threading
+import time
+import uuid
 import zipfile
 from pathlib import Path
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Callable
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
@@ -38,6 +41,11 @@ app.add_middleware(
 )
 
 _TEMP_DIR = Path(tempfile.mkdtemp(prefix="opus_lease_"))
+_PROGRESS_LOCK = threading.Lock()
+_PROGRESS_RUN_ID = ""
+_PROGRESS_SEQ = 0
+_PROGRESS_DONE = False
+_PROGRESS_EVENTS: list[dict] = []
 
 
 # ── Models ────────────────────────────────────────────────────────────────────
@@ -125,10 +133,132 @@ def get_llm_providers():
     return {"providers": get_provider_catalog()}
 
 
+# ── Streaming Progress ───────────────────────────────────────────────────────
+
+def _reset_progress(mode: str, run_id: str | None = None) -> str:
+    global _PROGRESS_DONE, _PROGRESS_EVENTS, _PROGRESS_RUN_ID, _PROGRESS_SEQ
+    progress_run_id = (run_id or "").strip() or f"progress_{uuid.uuid4().hex[:12]}"
+    with _PROGRESS_LOCK:
+        _PROGRESS_RUN_ID = progress_run_id
+        _PROGRESS_SEQ = 0
+        _PROGRESS_DONE = False
+        _PROGRESS_EVENTS = []
+    _publish_progress(
+        "extract",
+        "Preparing lease analysis",
+        percent=1,
+        status="active",
+        mode=mode,
+        run_id=progress_run_id,
+    )
+    return progress_run_id
+
+
+def _publish_progress(
+    step: str,
+    label: str,
+    *,
+    percent: int | float | None = None,
+    status: str = "active",
+    detail: str = "",
+    mode: str | None = None,
+    run_id: str | None = None,
+    event_type: str = "progress",
+    **extra,
+) -> None:
+    global _PROGRESS_DONE, _PROGRESS_SEQ
+    with _PROGRESS_LOCK:
+        target_run_id = (run_id or _PROGRESS_RUN_ID or "").strip()
+        if not target_run_id:
+            return
+        _PROGRESS_SEQ += 1
+        event = {
+            "type": event_type,
+            "run_id": target_run_id,
+            "seq": _PROGRESS_SEQ,
+            "step": step,
+            "label": label,
+            "detail": detail,
+            "percent": percent,
+            "status": status,
+            "mode": mode,
+            "ts": time.time(),
+        }
+        event.update({key: value for key, value in extra.items() if value is not None})
+        _PROGRESS_EVENTS.append(event)
+        if event_type in {"done", "error"}:
+            _PROGRESS_DONE = True
+
+
+def _progress_events_since(run_id: str, last_seq: int) -> tuple[list[dict], bool]:
+    with _PROGRESS_LOCK:
+        if run_id and _PROGRESS_RUN_ID != run_id:
+            return [], False
+        events = [event for event in _PROGRESS_EVENTS if event["seq"] > last_seq]
+        done = _PROGRESS_DONE
+    return events, done
+
+
+def _make_progress_callback(run_id: str, mode: str) -> Callable[..., None]:
+    def callback(
+        step: str,
+        label: str,
+        percent: int | float | None = None,
+        status: str = "active",
+        detail: str = "",
+        **extra,
+    ) -> None:
+        _publish_progress(
+            step,
+            label,
+            percent=percent,
+            status=status,
+            detail=detail,
+            mode=mode,
+            run_id=run_id,
+            **extra,
+        )
+
+    return callback
+
+
+@app.get("/api/progress/stream")
+async def stream_progress(run_id: str = ""):
+    async def event_stream() -> AsyncGenerator[str, None]:
+        last_seq = 0
+        idle_ticks = 0
+        while True:
+            events, done = _progress_events_since(run_id, last_seq)
+            if events:
+                idle_ticks = 0
+                for event in events:
+                    last_seq = max(last_seq, int(event.get("seq") or 0))
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            elif done:
+                break
+            else:
+                idle_ticks += 1
+                if idle_ticks % 100 == 0:
+                    yield ": keep-alive\n\n"
+                await asyncio.sleep(0.2)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 # ── Upload & Extract ──────────────────────────────────────────────────────────
 
 @app.post("/api/upload")
-async def upload_pdf(file: UploadFile = File(...)):
+async def upload_pdf(
+    file: UploadFile = File(...),
+    progress_run_id: str = Form(""),
+):
     from lease_summary.parsers.document_converter import (
         is_convertible_document,
         get_converted_pdf_path,
@@ -141,9 +271,13 @@ async def upload_pdf(file: UploadFile = File(...)):
     if not (is_pdf or is_word):
         raise HTTPException(400, "Only PDF and Word (.docx) files are supported.")
 
+    requested_mode = normalize_mode(state.mode)
+    run_id = _reset_progress(requested_mode, progress_run_id)
+    progress = _make_progress_callback(run_id, requested_mode)
     state.clear_session()
 
     # Save uploaded file
+    progress("extract", "Saving uploaded file", percent=3, detail=filename)
     upload_path = _TEMP_DIR / filename
     with upload_path.open("wb") as f:
         shutil.copyfileobj(file.file, f)
@@ -151,6 +285,7 @@ async def upload_pdf(file: UploadFile = File(...)):
     # Convert Word to PDF if needed
     if is_word:
         try:
+            progress("extract", "Converting Word document to PDF", percent=6, detail=filename)
             pdf_path = await asyncio.get_event_loop().run_in_executor(
                 None, get_converted_pdf_path, upload_path, _TEMP_DIR
             )
@@ -160,6 +295,7 @@ async def upload_pdf(file: UploadFile = File(...)):
             # Store original filename for display
             state.original_filename = filename
         except Exception as e:
+            progress("finalize", f"Document conversion failed: {e}", percent=100, status="error", event_type="error")
             raise HTTPException(500, f"Document conversion failed: {e}")
     else:
         state.pdf_path = upload_path
@@ -168,13 +304,18 @@ async def upload_pdf(file: UploadFile = File(...)):
     # Run extraction in thread (CPU-bound + I/O)
     loop = asyncio.get_event_loop()
     try:
-        result = await loop.run_in_executor(None, _run_extraction, state.pdf_path)
+        result = await loop.run_in_executor(None, _run_extraction, state.pdf_path, progress)
     except ValueError as e:
+        progress("finalize", str(e), percent=100, status="error", event_type="error")
         raise HTTPException(400, str(e))
+    except Exception as e:
+        progress("finalize", f"Analysis failed: {e}", percent=100, status="error", event_type="error")
+        raise
+    progress("finalize", "Analysis complete", percent=100, status="done", event_type="done")
     return result
 
 
-def _run_extraction(pdf_path: Path) -> dict:
+def _run_extraction(pdf_path: Path, progress_callback: Callable[..., None] | None = None) -> dict:
     """Run the appropriate pipeline and return JSON-serialisable summary."""
     _configure_llm_environment()
 
@@ -182,24 +323,93 @@ def _run_extraction(pdf_path: Path) -> dict:
     output_dir.mkdir(exist_ok=True)
 
     mode = normalize_mode(state.mode)
-    if mode == "standard" or not state.llm_enabled():
+    llm_enabled = state.llm_enabled()
+    provider = (state.llm_provider or "").strip().lower()
+    model = state.llm_model or get_provider_default_model(provider)
+    base_url = state.llm_base_url or get_provider_default_base_url(provider)
+    engine_info = {
+        "requested_mode": mode,
+        "effective_mode": mode,
+        "provider": provider,
+        "model": model,
+        "base_url": base_url,
+        "llm_enabled": llm_enabled,
+        "fallback_reason": "",
+        "semantic_candidates_count": 0,
+        "final_decisions_count": 0,
+        "warnings": [],
+    }
+
+    if mode == "standard" or not llm_enabled:
         from lease_summary.pipeline import run
-        result = run(pdf_path, output_dir=output_dir)
+        if mode != "standard" and not llm_enabled:
+            engine_info["effective_mode"] = "standard_regex_fallback"
+            engine_info["fallback_reason"] = _llm_fallback_reason(provider, model, base_url)
+            if progress_callback:
+                progress_callback(
+                    "rule",
+                    "LLM unavailable; using Standard Rule/Regex extraction",
+                    percent=15,
+                    status="active",
+                    detail=engine_info["fallback_reason"],
+                    fallback_reason=engine_info["fallback_reason"],
+                )
+        result = run(pdf_path, output_dir=output_dir, progress_callback=progress_callback)
     else:
         from lease_summary_v2.pipeline import run
         extraction_mode = "pure_llm" if mode == "pure_llm" else "ai_enhanced"
-        result = run(pdf_path, output_dir=output_dir, extraction_mode=extraction_mode)
+        result = run(
+            pdf_path,
+            output_dir=output_dir,
+            extraction_mode=extraction_mode,
+            progress_callback=progress_callback,
+        )
+        trace = result.get("trace")
+        engine_info["effective_mode"] = extraction_mode
+        if trace is not None:
+            engine_info["semantic_candidates_count"] = getattr(trace, "semantic_candidates_count", 0)
+            engine_info["final_decisions_count"] = getattr(trace, "final_decisions_count", 0)
+            engine_info["warnings"] = list(getattr(trace, "warnings", []) or [])
+            trace.requested_mode = mode
+            trace.effective_mode = extraction_mode
+            trace.provider = provider
+            trace.model = model
+            if getattr(trace, "semantic_candidates_count", 0) == 0 and extraction_mode != "standard":
+                reason = (
+                    "AI Enhanced ran, but the AI scan returned no evidence-backed fields; "
+                    "visible values are from Rule/Regex extraction."
+                )
+                engine_info["effective_mode"] = "ai_enhanced_rule_fallback"
+                engine_info["fallback_reason"] = reason
+                trace.effective_mode = "ai_enhanced_rule_fallback"
+                trace.fallback_reason = reason
+                if reason not in trace.warnings:
+                    trace.warnings.append(reason)
+                if reason not in engine_info["warnings"]:
+                    engine_info["warnings"].append(reason)
 
     state.summary = result["summary"]
     state.excel_path = result["excel"]
     state.doc_index = result.get("doc_index")
     state.evidence_index = result.get("evidence_index")
     state.extraction_trace = result.get("trace")
+    state.engine_info = engine_info
     doc_text = result.get("doc_text")
     state.ocr_word_data = doc_text.word_bboxes if doc_text else None
     _refresh_qa_engine(prebuilt_qa=result.get("qa"))
 
     return _serialise_summary(result["summary"])
+
+
+def _llm_fallback_reason(provider: str, model: str, base_url: str) -> str:
+    provider_label = provider or "provider"
+    if not provider:
+        return "AI Enhanced is selected, but no LLM provider is configured."
+    if not model:
+        return f"AI Enhanced is selected for {provider_label}, but no model is configured."
+    if provider in {"custom", "lmstudio"} and not base_url:
+        return f"AI Enhanced is selected for {provider_label}, but no base URL is configured."
+    return f"AI Enhanced is selected for {provider_label}, but the provider is missing an API key or is not reachable."
 
 
 def _configure_llm_environment() -> None:
@@ -263,7 +473,10 @@ def _serialise_summary(summary) -> dict:
             for item in (f.evidence or [])
             if item.quote
         ]
-        source = getattr(f, "source", None)
+        ev_method = None
+        if ev is not None:
+            ev_method = str(ev.method.value if hasattr(ev.method, "value") else ev.method)
+        source = getattr(f, "source", None) or ev_method
         sources = list(getattr(f, "sources", []) or ([source] if source else []))
         return {
             "value": _fmt(f.value),
@@ -288,6 +501,7 @@ def _serialise_summary(summary) -> dict:
             "pages": s.document_meta.pages,
             "ocr": s.document_meta.parsed_with_ocr,
         },
+        "engine": _serialise_engine_info(),
         "trace": _serialise_trace(state.extraction_trace),
         "parties": {
             "landlord_name": field(s.parties.landlord_name),
@@ -347,6 +561,27 @@ def _serialise_summary(summary) -> dict:
         if section in result and fkey in result[section]:
             result[section][fkey]["value"] = value
     return result
+
+
+def _serialise_engine_info() -> dict:
+    info = dict(getattr(state, "engine_info", {}) or {})
+    if not info:
+        mode = normalize_mode(state.mode)
+        provider = (state.llm_provider or "").strip().lower()
+        info = {
+            "requested_mode": mode,
+            "effective_mode": mode,
+            "provider": provider,
+            "model": state.llm_model or get_provider_default_model(provider),
+            "base_url": state.llm_base_url or get_provider_default_base_url(provider),
+            "llm_enabled": state.llm_enabled(),
+            "fallback_reason": "",
+            "semantic_candidates_count": getattr(state.extraction_trace, "semantic_candidates_count", 0) if state.extraction_trace else 0,
+            "final_decisions_count": getattr(state.extraction_trace, "final_decisions_count", 0) if state.extraction_trace else 0,
+            "warnings": list(getattr(state.extraction_trace, "warnings", []) or []) if state.extraction_trace else [],
+        }
+    info.pop("base_url", None)
+    return info
 
 
 @app.get("/api/trace")

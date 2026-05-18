@@ -19,6 +19,11 @@ class ToolCallTrace(BaseModel):
 class ExtractionTrace(BaseModel):
     run_id: str = Field(default_factory=lambda: f"run_{uuid.uuid4().hex[:12]}")
     mode: str = "standard"
+    requested_mode: str = ""
+    effective_mode: str = ""
+    provider: str = ""
+    model: str = ""
+    fallback_reason: str = ""
     file_name: str = ""
     file_size_bytes: int = 0
     parser_backend: str = ""

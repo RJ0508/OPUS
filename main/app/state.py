@@ -58,6 +58,7 @@ class AppState:
     doc_index: object = None
     evidence_index: object = None
     extraction_trace: object = None
+    engine_info: dict = field(default_factory=dict)
 
     # Settings (persisted)
     api_keys: dict[str, str] = field(default_factory=dict)
@@ -130,6 +131,7 @@ class AppState:
         self.doc_index = None
         self.evidence_index = None
         self.extraction_trace = None
+        self.engine_info = {}
 
 
 state = AppState()
