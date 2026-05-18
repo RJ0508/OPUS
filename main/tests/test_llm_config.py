@@ -195,3 +195,41 @@ def test_safe_chat_create_retries_temperature_one_models():
     assert response.ok is True
     assert calls[0]["temperature"] == 0
     assert calls[1]["temperature"] == 1
+
+
+def test_safe_chat_create_adapts_common_provider_parameter_rejections():
+    calls: list[dict] = []
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                raise RuntimeError("max_tokens is not supported by this model")
+            if len(calls) == 2:
+                raise RuntimeError("temperature is unsupported")
+            if len(calls) == 3:
+                raise RuntimeError("json_schema is not supported")
+            if len(calls) == 4:
+                raise RuntimeError("tools are not supported")
+            return SimpleNamespace(ok=True)
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions()))
+
+    response = llm_config._safe_chat_create(
+        client,
+        model="provider-model",
+        messages=[],
+        temperature=0,
+        max_tokens=10,
+        response_format={"type": "json_schema", "json_schema": {"name": "x", "schema": {}}},
+        tools=[{"type": "function", "function": {"name": "read_page"}}],
+        tool_choice="auto",
+    )
+
+    assert response.ok is True
+    assert "max_tokens" in calls[0]
+    assert calls[1]["max_completion_tokens"] == 10
+    assert "temperature" not in calls[2]
+    assert calls[3]["response_format"] == {"type": "json_object"}
+    assert "tools" not in calls[4]
+    assert "tool_choice" not in calls[4]

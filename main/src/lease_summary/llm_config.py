@@ -374,39 +374,133 @@ def _dedupe_model_ids(values) -> list[str]:
 def _safe_chat_create(client, **kwargs):
     """Call chat.completions.create with automatic parameter adaptation.
 
-    Some models (e.g. OpenAI o1/o3/gpt-4.5) reject ``max_tokens`` and
-    require ``max_completion_tokens`` instead.  This helper catches that
-    error and retries with the corrected parameter, so callers never
-    need to hard-code provider-specific parameter names.
+    OpenAI-compatible providers differ on small but important request
+    parameters. This helper keeps callers provider-agnostic by retrying with
+    conservative parameter changes when a model rejects otherwise valid input.
     """
-    try:
-        return client.chat.completions.create(**kwargs)
-    except Exception as exc:
-        text = str(exc).lower()
-        if _temperature_must_be_one(text) and kwargs.get("temperature") != 1:
-            retry_kwargs = dict(kwargs)
-            retry_kwargs["temperature"] = 1
-            return client.chat.completions.create(**retry_kwargs)
+    current_kwargs = dict(kwargs)
+    seen_signatures: set[str] = set()
+    last_exc: Exception | None = None
 
-        # max_tokens -> max_completion_tokens
-        if "max_tokens" in text and ("unsupported" in text or "not supported" in text):
-            retry_kwargs = dict(kwargs)
-            if "max_tokens" in retry_kwargs:
-                retry_kwargs["max_completion_tokens"] = retry_kwargs.pop("max_tokens")
-                try:
-                    return client.chat.completions.create(**retry_kwargs)
-                except Exception as exc2:
-                    text2 = str(exc2).lower()
-                    # Some models reject temperature entirely, while Kimi k2.6
-                    # currently accepts only temperature=1.
-                    if "temperature" in text2 and ("unsupported" in text2 or "not supported" in text2):
-                        retry_kwargs.pop("temperature", None)
-                        return client.chat.completions.create(**retry_kwargs)
-                    if _temperature_must_be_one(text2) and retry_kwargs.get("temperature") != 1:
-                        retry_kwargs["temperature"] = 1
-                        return client.chat.completions.create(**retry_kwargs)
-                    raise
-        raise
+    for _ in range(8):
+        signature = _kwargs_signature(current_kwargs)
+        seen_signatures.add(signature)
+        try:
+            return client.chat.completions.create(**current_kwargs)
+        except Exception as exc:
+            last_exc = exc
+            next_kwargs = _adapt_chat_kwargs_for_error(current_kwargs, str(exc))
+            if next_kwargs is None:
+                raise
+            next_signature = _kwargs_signature(next_kwargs)
+            if next_signature in seen_signatures:
+                raise
+            current_kwargs = next_kwargs
+
+    if last_exc is not None:
+        raise last_exc
+    return client.chat.completions.create(**kwargs)
+
+
+def _adapt_chat_kwargs_for_error(kwargs: dict, error_text: str) -> dict | None:
+    text = (error_text or "").lower()
+
+    if _temperature_must_be_one(text) and kwargs.get("temperature") != 1:
+        retry_kwargs = dict(kwargs)
+        retry_kwargs["temperature"] = 1
+        return retry_kwargs
+
+    if _parameter_rejected(text, "temperature") and "temperature" in kwargs:
+        retry_kwargs = dict(kwargs)
+        retry_kwargs.pop("temperature", None)
+        return retry_kwargs
+
+    if _parameter_rejected(text, "max_tokens") and "max_tokens" in kwargs:
+        retry_kwargs = dict(kwargs)
+        retry_kwargs["max_completion_tokens"] = retry_kwargs.pop("max_tokens")
+        return retry_kwargs
+
+    if _parameter_rejected(text, "max_completion_tokens") and "max_completion_tokens" in kwargs:
+        retry_kwargs = dict(kwargs)
+        retry_kwargs["max_tokens"] = retry_kwargs.pop("max_completion_tokens")
+        return retry_kwargs
+
+    if _response_format_rejected(text) and "response_format" in kwargs:
+        retry_kwargs = dict(kwargs)
+        response_format = retry_kwargs.get("response_format")
+        if isinstance(response_format, dict) and response_format.get("type") == "json_schema":
+            retry_kwargs["response_format"] = {"type": "json_object"}
+        else:
+            retry_kwargs.pop("response_format", None)
+        return retry_kwargs
+
+    if _tools_rejected(text) and ("tools" in kwargs or "tool_choice" in kwargs):
+        retry_kwargs = dict(kwargs)
+        retry_kwargs.pop("tools", None)
+        retry_kwargs.pop("tool_choice", None)
+        retry_kwargs.pop("parallel_tool_calls", None)
+        return retry_kwargs
+
+    return None
+
+
+def _kwargs_signature(kwargs: dict) -> str:
+    try:
+        return json.dumps(kwargs, sort_keys=True, default=str)
+    except TypeError:
+        return repr(sorted((key, repr(value)) for key, value in kwargs.items()))
+
+
+def _parameter_rejected(error_text: str, parameter: str) -> bool:
+    text = (error_text or "").lower()
+    parameter_text = parameter.lower()
+    if parameter_text not in text:
+        return False
+    rejection_markers = (
+        "unsupported",
+        "not supported",
+        "does not support",
+        "invalid",
+        "unknown",
+        "unrecognized",
+        "unexpected",
+        "not allowed",
+        "extra inputs",
+    )
+    return any(marker in text for marker in rejection_markers)
+
+
+def _response_format_rejected(error_text: str) -> bool:
+    text = (error_text or "").lower()
+    if not any(term in text for term in ("response_format", "json_schema", "json_object")):
+        return False
+    return _parameter_rejected(text, "response_format") or any(
+        marker in text
+        for marker in (
+            "json_schema is not supported",
+            "json_object is not supported",
+            "must be one of",
+            "unsupported response format",
+        )
+    )
+
+
+def _tools_rejected(error_text: str) -> bool:
+    text = (error_text or "").lower()
+    if not any(term in text for term in ("tools", "tool_choice", "function_call", "function calling")):
+        return False
+    return any(
+        marker in text
+        for marker in (
+            "unsupported",
+            "not supported",
+            "does not support",
+            "unknown",
+            "unrecognized",
+            "unexpected",
+            "invalid",
+        )
+    )
 
 
 def _temperature_must_be_one(error_text: str) -> bool:
