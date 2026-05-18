@@ -1,0 +1,10 @@
+{
+  "tenant_name_contains": "Tinygrad",
+  "landlord_name_contains": "Capital Faith",
+  "monthly_rent_hkd": 15015.0,
+  "minimum_confidence": 0.5,
+  "required_evidence_fields": [
+    "parties.tenant_name",
+    "financials.monthly_rent_hkd"
+  ]
+}

@@ -20,8 +20,11 @@ class ExtractionTrace(BaseModel):
     run_id: str = Field(default_factory=lambda: f"run_{uuid.uuid4().hex[:12]}")
     mode: str = "standard"
     file_name: str = ""
+    file_size_bytes: int = 0
     parser_backend: str = ""
     ocr_used: bool = False
+    ocr_avg_chars: float = 0.0
+    pages_count: int = 0
     chunks_count: int = 0
     rule_candidates_count: int = 0
     semantic_candidates_count: int = 0
@@ -38,4 +41,3 @@ class TraceTimer:
 
     def finish(self) -> None:
         self.trace.latency_ms = int((time.perf_counter() - self.started) * 1000)
-

@@ -288,6 +288,7 @@ def _serialise_summary(summary) -> dict:
             "pages": s.document_meta.pages,
             "ocr": s.document_meta.parsed_with_ocr,
         },
+        "trace": _serialise_trace(state.extraction_trace),
         "parties": {
             "landlord_name": field(s.parties.landlord_name),
             "landlord_address": field(s.parties.landlord_registered_address),
@@ -346,6 +347,25 @@ def _serialise_summary(summary) -> dict:
         if section in result and fkey in result[section]:
             result[section][fkey]["value"] = value
     return result
+
+
+@app.get("/api/trace")
+def get_trace():
+    if not state.extraction_trace:
+        raise HTTPException(404, "No extraction trace available.")
+    return _serialise_trace(state.extraction_trace)
+
+
+def _serialise_trace(trace) -> dict | None:
+    if trace is None:
+        return None
+    if hasattr(trace, "model_dump"):
+        data = trace.model_dump()
+    elif isinstance(trace, dict):
+        data = dict(trace)
+    else:
+        return None
+    return data
 
 
 def _fmt(val) -> str | None:

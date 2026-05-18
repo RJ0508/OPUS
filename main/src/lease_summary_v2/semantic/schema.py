@@ -20,9 +20,4 @@ class SemanticScanResult(BaseModel):
     findings: list[SemanticFinding] = Field(default_factory=list)
 
 
-SEMANTIC_SCAN_JSON_SCHEMA = {
-    "name": "semantic_scan_result",
-    "schema": SemanticScanResult.model_json_schema(),
-    "strict": True,
-}
-
+SEMANTIC_SCAN_JSON_SCHEMA = SemanticScanResult.model_json_schema()

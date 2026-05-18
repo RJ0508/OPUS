@@ -8,7 +8,9 @@ from ..core.candidates import FieldCandidate
 from ..core.document_index import DocumentIndex
 from ..core.field_specs import FIELD_SPEC_BY_PATH
 from ..core.trace import ExtractionTrace
+from ..models import LeaseSummary
 from .schemas import EnhancedExtractionResult, EnhancedFieldDecision
+from .tool_calling import run_llm_tool_agent
 from .tools import AgentToolbox
 
 _VERIFY_PATTERNS = {
@@ -25,11 +27,31 @@ _VERIFY_PATTERNS = {
 def run_enhancement_agent(
     *,
     doc_index: DocumentIndex,
+    current_summary: LeaseSummary | None = None,
     rule_candidates: list[FieldCandidate],
     semantic_candidates: list[FieldCandidate],
     trace: ExtractionTrace,
+    client=None,
+    model: str | None = None,
 ) -> EnhancedExtractionResult:
-    toolbox = AgentToolbox(doc_index)
+    toolbox = AgentToolbox(doc_index, client=client, model=model)
+    if current_summary is not None and client is not None and model:
+        llm_result = run_llm_tool_agent(
+            doc_index=doc_index,
+            current_summary=current_summary,
+            rule_candidates=rule_candidates,
+            semantic_candidates=semantic_candidates,
+            toolbox=toolbox,
+            client=client,
+            model=model,
+        )
+        if llm_result and llm_result.decisions:
+            trace.agent_tool_calls.extend(toolbox.trace_calls)
+            trace.final_decisions_count = len(llm_result.decisions)
+            trace.warnings.extend(llm_result.warnings)
+            return llm_result
+        trace.warnings.append("LLM tool-calling agent unavailable; used deterministic evidence verifier.")
+
     warnings: list[str] = []
     decisions: list[EnhancedFieldDecision] = []
 

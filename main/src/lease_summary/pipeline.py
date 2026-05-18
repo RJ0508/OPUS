@@ -5,9 +5,8 @@ import datetime
 import os
 from pathlib import Path
 
-import yaml
-
 from .config import TEMPLATE_PATH, DEFAULT_OUTPUT_DIR
+from .doc_type import detect_doc_type
 from .extractors.ai_primary import ai_primary_extract
 from .extractors.clauses import extract_clauses
 from .extractors.dates import extract_term
@@ -51,7 +50,7 @@ def run(
     sections = split(doc_text)
 
     # ── Step 3: Detect document type ────────────────────────────────────────────
-    doc_type = _detect_doc_type(sections.principal_terms)
+    doc_type = detect_doc_type(sections.principal_terms)
 
     if doc_type == "not_a_lease":
         raise ValueError(
@@ -106,61 +105,6 @@ def run(
         "doc_text": doc_text,
     }
 
-
-
-def _load_doc_type_signals() -> dict:
-    """Load lease / non-lease signal keywords from external YAML config."""
-    import sys
-
-    # PyInstaller sets sys._MEIPASS when running the bundled app
-    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
-        base = Path(sys._MEIPASS)
-    else:
-        base = Path(__file__).parent.parent.parent  # main/
-
-    config_path = base / "config" / "doc_type_signals.yaml"
-    if config_path.exists():
-        with config_path.open("r", encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
-
-    # Fallback defaults if config is missing
-    return {
-        "lease_signals": [
-            "landlord", "tenant", "lessor", "lessee",
-            "lease", "tenancy", "let and hire",
-            "demised premises", "rent", "security deposit",
-        ],
-        "non_lease_signals": [
-            "invoice", "invoice no", "invoice date", "fee payable",
-            "quotation", "receipt", "payment receipt",
-            "floor plan", "site plan",
-            "management accounts", "financial statement",
-            "business registration",
-            "company search", "writ of summons",
-        ],
-        "non_lease_threshold": 2,
-        "lease_threshold": 1,
-    }
-
-
 def _detect_doc_type(text: str) -> str:
-    signals = _load_doc_type_signals()
-    lease_signals = signals.get("lease_signals", [])
-    non_lease_signals = signals.get("non_lease_signals", [])
-    non_lease_threshold = signals.get("non_lease_threshold", 2)
-    lease_threshold = signals.get("lease_threshold", 1)
-    specific_types = signals.get("specific_types", {})
-
-    text_lower = text.lower()
-
-    lease_hits = sum(1 for s in lease_signals if s in text_lower)
-    non_lease_hits = sum(1 for s in non_lease_signals if s in text_lower)
-
-    if non_lease_hits >= non_lease_threshold and lease_hits <= lease_threshold:
-        return "not_a_lease"
-
-    for doc_type, keywords in specific_types.items():
-        if any(kw in text_lower for kw in keywords):
-            return doc_type
-
-    return "unknown"
+    """Compatibility wrapper for tests/imports that still reference this helper."""
+    return detect_doc_type(text)

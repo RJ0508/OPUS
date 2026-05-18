@@ -133,6 +133,7 @@ const TRANSLATIONS = {
     selectPDFs:      'Select PDFs or Word docs',
     addMore:         '+ Add More',
     exportAll:       'Export All & Download',
+    batchModeNote:   'Batch uses current mode:',
     dropHere:        'Drop PDF or Word here',
     dropHereMulti:   'Drop PDFs or Word docs here',
     // toolbar
@@ -171,6 +172,9 @@ const TRANSLATIONS = {
     metaType:        'Type',
     metaPages:       'Pages',
     editBtn:         'Edit',
+    traceBtn:        'View AI trace',
+    hideTraceBtn:    'Hide AI trace',
+    traceUnavailable:'No AI trace is available for this run.',
     saveBtn:         'Save',
     cancelBtn:       'Cancel',
     notDetected:     'not detected',
@@ -240,6 +244,7 @@ const TRANSLATIONS = {
     selectPDFs:      '選擇 PDF 或 Word',
     addMore:         '+ 新增文件',
     exportAll:       '全部匯出並下載',
+    batchModeNote:   '批量處理使用目前模式：',
     dropHere:        '將 PDF 或 Word 拖放至此',
     dropHereMulti:   '將 PDF 或 Word 拖放至此',
     newLease:        '新增',
@@ -273,6 +278,9 @@ const TRANSLATIONS = {
     metaType:        '類型',
     metaPages:       '頁數',
     editBtn:         '編輯',
+    traceBtn:        '查看 AI trace',
+    hideTraceBtn:    '隱藏 AI trace',
+    traceUnavailable:'本次分析沒有 AI trace。',
     saveBtn:         '儲存',
     cancelBtn:       '取消',
     notDetected:     '未擷取',
@@ -1501,6 +1509,13 @@ function _drawSummary(data) {
     cancelBtn.onclick = () => { editMode = false; _drawSummary(data); };
     actions.append(saveBtn, cancelBtn);
   } else {
+    if (data.trace) {
+      const traceBtn = document.createElement('button');
+      traceBtn.className = 'btn-sm btn-trace';
+      traceBtn.textContent = t('traceBtn');
+      traceBtn.onclick = () => _toggleTracePanel(data, traceBtn);
+      actions.appendChild(traceBtn);
+    }
     const editBtn = document.createElement('button');
     editBtn.className = 'btn-sm btn-edit-summary';
     editBtn.innerHTML = `<svg width="12" height="12" style="vertical-align:-1px;margin-right:4px"><use href="#ic-edit"/></svg>${t('editBtn')}`;
@@ -1510,6 +1525,13 @@ function _drawSummary(data) {
 
   meta.append(info, actions);
   container.appendChild(meta);
+  if (!editMode && data.trace) {
+    const tracePanel = document.createElement('div');
+    tracePanel.id = 'trace-panel';
+    tracePanel.className = 'trace-panel';
+    tracePanel.hidden = true;
+    container.appendChild(tracePanel);
+  }
 
   // ── Single flat table — strict template order, one row per template row ──
   const table = document.createElement('table');
@@ -1561,6 +1583,53 @@ function _drawSummary(data) {
     drawer.innerHTML = `<div class="evidence-empty">${escHtml(t('notDetected'))}</div>`;
     container.appendChild(drawer);
   }
+}
+
+async function _toggleTracePanel(data, button) {
+  const panel = document.getElementById('trace-panel');
+  if (!panel) return;
+  if (!panel.hidden) {
+    panel.hidden = true;
+    if (button) button.textContent = t('traceBtn');
+    return;
+  }
+  let trace = data.trace;
+  try {
+    const response = await fetch(`${API}/api/trace`);
+    if (response.ok) trace = await response.json();
+  } catch (_) {}
+  panel.innerHTML = _renderTrace(trace);
+  panel.hidden = false;
+  if (button) button.textContent = t('hideTraceBtn');
+}
+
+function _renderTrace(trace) {
+  if (!trace) return `<div class="trace-empty">${escHtml(t('traceUnavailable'))}</div>`;
+  const calls = trace.agent_tool_calls || [];
+  const callRows = calls.length
+    ? calls.slice(0, 20).map(call => `
+      <div class="trace-call">
+        <span>${escHtml(call.tool || '')}</span>
+        <span>${escHtml(String(call.result_count ?? 0))} results</span>
+        <span>${escHtml(String(call.latency_ms ?? 0))} ms</span>
+      </div>
+    `).join('')
+    : '<div class="trace-empty">No tool calls recorded.</div>';
+  const warnings = (trace.warnings || []).map(w => `<li>${escHtml(w)}</li>`).join('');
+  return `
+    <div class="trace-grid">
+      <div><b>Run</b><span>${escHtml(trace.run_id || '')}</span></div>
+      <div><b>Mode</b><span>${escHtml(trace.mode || '')}</span></div>
+      <div><b>Pages</b><span>${escHtml(String(trace.pages_count || 0))}</span></div>
+      <div><b>Chunks</b><span>${escHtml(String(trace.chunks_count || 0))}</span></div>
+      <div><b>Rule candidates</b><span>${escHtml(String(trace.rule_candidates_count || 0))}</span></div>
+      <div><b>Semantic candidates</b><span>${escHtml(String(trace.semantic_candidates_count || 0))}</span></div>
+      <div><b>Final decisions</b><span>${escHtml(String(trace.final_decisions_count || 0))}</span></div>
+      <div><b>Latency</b><span>${escHtml(String(trace.latency_ms || 0))} ms</span></div>
+    </div>
+    ${warnings ? `<ul class="trace-warnings">${warnings}</ul>` : ''}
+    <div class="trace-calls">${callRows}</div>
+  `;
 }
 
 function _renderRowDisplay(valueTd, row, data) {
@@ -2328,6 +2397,11 @@ function renderBatchFileList() {
   const list = document.getElementById('batch-file-list');
   if (!batchFiles.length) { area.classList.remove('visible'); return; }
   area.classList.add('visible');
+  const note = document.getElementById('batch-mode-note');
+  if (note) {
+    const modeLabel = normalizeMode(settings.mode) === 'ai_enhanced' ? t('modeAI') : t('modeStandard');
+    note.textContent = `${t('batchModeNote')} ${modeLabel}`;
+  }
   list.innerHTML = '';
   batchFiles.forEach((item, idx) => {
     const row = document.createElement('div');

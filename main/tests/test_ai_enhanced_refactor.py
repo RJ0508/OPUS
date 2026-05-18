@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import sys
+from types import SimpleNamespace
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -12,12 +15,14 @@ import app.state as state_module  # noqa: E402
 from lease_summary_v2.agent.guardrails import MAX_REGEX_MATCHES  # noqa: E402
 from lease_summary_v2.agent.enhancer import run_enhancement_agent  # noqa: E402
 from lease_summary_v2.agent.tools import AgentToolbox  # noqa: E402
+from lease_summary_v2.agent.tool_calling import run_llm_tool_agent  # noqa: E402
 from lease_summary_v2.core.candidates import FieldCandidate  # noqa: E402
+from lease_summary_v2.core import guardrails as pipeline_guardrails  # noqa: E402
 from lease_summary_v2.core.document_index import DocumentChunk, DocumentIndex  # noqa: E402
 from lease_summary_v2.core.evidence import EvidenceSpan  # noqa: E402
 from lease_summary_v2.core.trace import ExtractionTrace  # noqa: E402
-from lease_summary_v2.models import ExtractionResult, LeaseSummary  # noqa: E402
-from lease_summary_v2.parsers.pdf_text import PageText  # noqa: E402
+from lease_summary_v2.models import Evidence, ExtractionMethod, ExtractionResult, LeaseSummary  # noqa: E402
+from lease_summary_v2.parsers.pdf_text import DocumentText, PageText  # noqa: E402
 from lease_summary_v2.parsers.section_splitter import SplitDocument  # noqa: E402
 from lease_summary_v2.pipeline import _sync_break_clause  # noqa: E402
 from lease_summary_v2.semantic.scanner import semantic_scan_document  # noqa: E402
@@ -146,6 +151,28 @@ def test_agent_marks_unresolved_rule_semantic_conflict_for_review():
     assert trace.agent_tool_calls
 
 
+def test_llm_tool_agent_can_call_tools_and_return_guarded_decision():
+    doc_index = _doc_index(["The monthly rent shall be HK$10,000."])
+    toolbox = AgentToolbox(doc_index)
+    summary = LeaseSummary()
+    client = _FakeToolClient()
+
+    result = run_llm_tool_agent(
+        doc_index=doc_index,
+        current_summary=summary,
+        rule_candidates=[],
+        semantic_candidates=[],
+        toolbox=toolbox,
+        client=client,
+        model="fake-model",
+    )
+
+    assert result is not None
+    assert result.decisions[0].field_path == "financials.monthly_rent_hkd"
+    assert result.decisions[0].selected_value == 10000
+    assert toolbox.trace_calls[0].tool == "read_page"
+
+
 def test_regex_tool_clamps_match_count():
     doc_index = _doc_index(["rent " * (MAX_REGEX_MATCHES + 12)])
     toolbox = AgentToolbox(doc_index)
@@ -156,6 +183,23 @@ def test_regex_tool_clamps_match_count():
     assert toolbox.trace_calls[-1].tool == "regex_search"
 
 
+def test_agent_financial_and_candidate_tools():
+    doc_index = _doc_index(["The monthly rent shall be HK$10,000."])
+    toolbox = AgentToolbox(doc_index)
+
+    calculated = toolbox.calculate_financials(area_sqft=1000, monthly_rent_hkd=10000, security_deposit_hkd=30000)
+    validation = toolbox.validate_candidate(
+        field_path="financials.monthly_rent_hkd",
+        evidence_quote="The monthly rent shall be HK$10,000.",
+        page=1,
+        chunk_id=None,
+    )
+
+    assert calculated["rent_per_sqft_hkd"] == 10.0
+    assert calculated["security_deposit_multiple"] == 3.0
+    assert validation.valid is True
+
+
 def test_break_clause_canonical_fields_are_synced():
     summary = LeaseSummary()
     summary.term.tenant_termination_right_text = ExtractionResult(value="Tenant may break on notice", confidence=0.8)
@@ -163,3 +207,96 @@ def test_break_clause_canonical_fields_are_synced():
     _sync_break_clause(summary)
 
     assert summary.clauses.break_clause_text.value == "Tenant may break on notice"
+
+
+def test_pipeline_guardrails_record_low_ocr_warning():
+    trace = ExtractionTrace(mode="ai_enhanced", file_name="scan.pdf")
+    doc = DocumentText(
+        pages=[PageText(page_num=1, text="short")],
+        parsed_with_ocr=True,
+        ocr_avg_chars=10,
+    )
+
+    pipeline_guardrails.validate_document_text(doc, trace)
+
+    assert trace.pages_count == 1
+    assert trace.warnings
+
+
+def test_pipeline_guardrails_reject_too_many_pages(monkeypatch):
+    trace = ExtractionTrace(mode="ai_enhanced", file_name="long.pdf")
+    doc = DocumentText(pages=[
+        PageText(page_num=1, text="lease"),
+        PageText(page_num=2, text="lease"),
+    ])
+    monkeypatch.setattr(pipeline_guardrails, "MAX_PAGES", 1)
+
+    with pytest.raises(ValueError, match="Limit"):
+        pipeline_guardrails.validate_document_text(doc, trace)
+
+
+def test_trace_endpoint_serialises_current_trace():
+    original = main_module.state.extraction_trace
+    trace = ExtractionTrace(mode="ai_enhanced", file_name="lease.pdf")
+    try:
+        main_module.state.extraction_trace = trace
+        payload = main_module.get_trace()
+    finally:
+        main_module.state.extraction_trace = original
+
+    assert payload["run_id"] == trace.run_id
+    assert payload["mode"] == "ai_enhanced"
+
+
+def test_ocr_word_api_and_serialised_evidence_support_highlight():
+    original_word_data = main_module.state.ocr_word_data
+    original_summary = main_module.state.summary
+    summary = LeaseSummary()
+    summary.document_meta.pages = 1
+    summary.document_meta.source_filename = "scan.pdf"
+    summary.parties.tenant_name = ExtractionResult(
+        value="Tenant Limited",
+        confidence=0.9,
+        evidence=[Evidence(page=1, quote="Tenant Limited", method=ExtractionMethod.agent)],
+        source="agent",
+        sources=["agent"],
+    )
+    try:
+        main_module.state.ocr_word_data = {1: [(10, 10, 50, 20, "Tenant"), (52, 10, 90, 20, "Limited")]}
+        main_module.state.summary = summary
+        assert main_module.get_pdf_words()["pages"]["1"][0][4] == "Tenant"
+        payload = main_module._serialise_summary(summary)
+    finally:
+        main_module.state.ocr_word_data = original_word_data
+        main_module.state.summary = original_summary
+
+    assert payload["parties"]["tenant_name"]["page"] == 1
+    assert payload["parties"]["tenant_name"]["quote"] == "Tenant Limited"
+
+
+class _FakeToolClient:
+    def __init__(self):
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+        self.calls = 0
+
+    def create(self, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            tool_call = SimpleNamespace(
+                id="call_1",
+                function=SimpleNamespace(name="read_page", arguments='{"page_num": 1}'),
+            )
+            message = SimpleNamespace(content="", tool_calls=[tool_call])
+        else:
+            message = SimpleNamespace(
+                content=(
+                    '{"decisions":[{"field_path":"financials.monthly_rent_hkd",'
+                    '"selected_value":10000,"confidence":0.91,'
+                    '"evidence":[{"page":1,"quote":"The monthly rent shall be HK$10,000.",'
+                    '"method":"agent"}],"sources":["agent"],'
+                    '"reason_summary":"Read page 1 and verified the rent quote.",'
+                    '"needs_review":false,"conflict":false}],"warnings":[],"trace_id":"run_fake"}'
+                ),
+                tool_calls=[],
+            )
+        return SimpleNamespace(choices=[SimpleNamespace(message=message)])

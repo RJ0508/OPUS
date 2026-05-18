@@ -5,7 +5,7 @@ import json
 import re
 from typing import Callable
 
-from lease_summary.llm_config import _safe_chat_create, build_openai_client
+from lease_summary.llm_config import _safe_chat_create, build_openai_client, structured_response_format
 
 from ..core.candidates import FieldCandidate
 from ..core.document_index import DocumentChunk, DocumentIndex
@@ -76,10 +76,10 @@ def semantic_scan_chunk(
         ],
         "temperature": 0,
         "max_tokens": 2500,
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": SEMANTIC_SCAN_JSON_SCHEMA,
-        },
+        "response_format": structured_response_format(
+            "semantic_scan_result",
+            SEMANTIC_SCAN_JSON_SCHEMA,
+        ),
     }
     try:
         response = _safe_chat_create(client, **kwargs)
@@ -155,4 +155,3 @@ def _parse_json(text: str) -> dict | None:
             return data if isinstance(data, dict) else None
         except json.JSONDecodeError:
             return None
-

@@ -220,6 +220,40 @@ def get_provider_catalog() -> dict[str, dict[str, object]]:
     return catalog
 
 
+def strict_function_tool(
+    name: str,
+    description: str,
+    parameters: dict[str, object],
+) -> dict[str, object]:
+    """Build an OpenAI-compatible strict function tool definition."""
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": parameters,
+            "strict": True,
+        },
+    }
+
+
+def structured_response_format(
+    name: str,
+    schema: dict[str, object],
+    *,
+    strict: bool = True,
+) -> dict[str, object]:
+    """Build a strict json_schema response_format payload."""
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": name,
+            "schema": schema,
+            "strict": strict,
+        },
+    }
+
+
 def list_available_models(
     *,
     provider: str,

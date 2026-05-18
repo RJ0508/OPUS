@@ -284,6 +284,15 @@ html, body {
 /* Batch queue */
 #batch-area { display: none; flex-direction: column; gap: 10px; width: 540px; }
 #batch-area.visible { display: flex; }
+#batch-mode-note {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+  background: var(--green-lighter);
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
 #batch-file-list {
   background: var(--white);
   border: 1px solid var(--border);
@@ -708,6 +717,8 @@ html, body {
 .btn-sm:active { transform: scale(.97); }
 .btn-edit-summary { background: #fff; color: var(--green); border-color: var(--green-border); }
 .btn-edit-summary:hover { background: var(--green-light); border-color: var(--green); }
+.btn-trace { background: #fff; color: #28506B; border-color: #C9DAE6; }
+.btn-trace:hover { background: #EEF4F9; border-color: #9DB9CE; }
 .btn-save-edits { background: var(--green); color: #fff; box-shadow: 0 1px 3px rgba(59,107,53,.25); }
 .btn-save-edits:hover { background: var(--green-hover); }
 .btn-cancel-edits { background: none; color: var(--text-muted); border-color: var(--border); }
@@ -840,6 +851,63 @@ html, body {
 .evidence-trace {
   margin-top: 6px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.trace-panel {
+  border-bottom: 1px solid var(--green-border);
+  background: #F7FAF6;
+  padding: 14px 18px;
+}
+.trace-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 8px;
+}
+.trace-grid div {
+  background: var(--white);
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+.trace-grid b {
+  display: block;
+  color: var(--text-muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .45px;
+  margin-bottom: 3px;
+}
+.trace-grid span,
+.trace-call {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+.trace-warnings {
+  margin: 10px 0 0 18px;
+  color: var(--warn-color);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.trace-calls {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.trace-call {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 10px;
+  background: var(--white);
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.trace-empty {
+  color: var(--text-muted);
+  font-size: 12px;
 }
 
 /* ── Chat tab ────────────────────────────────────────────────────────────── */

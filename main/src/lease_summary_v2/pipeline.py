@@ -7,6 +7,9 @@ import os
 from pathlib import Path
 from typing import Any
 
+from lease_summary.doc_type import detect_doc_type
+from lease_summary.llm_config import build_openai_client
+
 from .config import TEMPLATE_PATH, DEFAULT_OUTPUT_DIR
 from .extractors.ai_primary import ai_primary_extract
 from .agent.enhancer import run_enhancement_agent
@@ -17,6 +20,7 @@ from .core.evidence import EvidenceIndex
 from .core.field_specs import FIELD_SPECS
 from .core.rule_scanner import run_rule_scanners
 from .core.trace import ExtractionTrace, TraceTimer
+from .core.guardrails import validate_document_text, validate_input_file
 from .models import DocumentMeta, Evidence, ExtractionMethod, ExtractionResult, LeaseSummary, SummaryMeta
 from .parsers.pdf_text import extract_text
 from .parsers.section_splitter import split
@@ -52,11 +56,13 @@ def run(
 
     trace = ExtractionTrace(mode=extraction_mode, file_name=input_pdf.name)
     timer = TraceTimer(trace)
+    validate_input_file(input_pdf, trace)
 
     # ── Step 1: Extract text ────────────────────────────────────────────────────
     doc_text = extract_text(input_pdf)
     trace.parser_backend = doc_text.extraction_backend
     trace.ocr_used = doc_text.parsed_with_ocr
+    validate_document_text(doc_text, trace)
 
     # ── Step 2: Split into sections ─────────────────────────────────────────────
     sections = split(doc_text)
@@ -94,14 +100,28 @@ def run(
         ai_primary_extract(summary, doc_text, sections, pure_llm=pure_llm)
         _sync_break_clause(summary)
     else:
-        semantic_candidates = semantic_scan_document(doc_index, FIELD_SPECS)
+        llm_client, llm_settings = build_openai_client(
+            "https://api.moonshot.cn/v1",
+            "kimi-k2.5",
+            default_provider="moonshot",
+        )
+        llm_model = llm_settings.model if llm_settings else None
+        semantic_candidates = semantic_scan_document(
+            doc_index,
+            FIELD_SPECS,
+            client=llm_client,
+            model=llm_model,
+        )
         trace.semantic_candidates_count = len(semantic_candidates)
         if semantic_candidates:
             enhanced = run_enhancement_agent(
                 doc_index=doc_index,
+                current_summary=summary,
                 rule_candidates=rule_candidates,
                 semantic_candidates=semantic_candidates,
                 trace=trace,
+                client=llm_client,
+                model=llm_model,
             )
             summary = _apply_agent_decisions(summary, enhanced.decisions, trace.run_id)
         elif pure_llm:
@@ -294,39 +314,5 @@ _FIELD_SETTERS = {
 
 
 
-_NOT_LEASE_SIGNALS = [
-    "invoice", "invoice no", "invoice date", "fee payable",
-    "quotation", "receipt", "payment receipt",
-    "floor plan", "site plan",
-    "management accounts", "financial statement",
-    "business registration",
-    "company search", "writ of summons",
-]
-
-_LEASE_SIGNALS = [
-    "landlord", "tenant", "lessor", "lessee",
-    "lease", "tenancy", "let and hire",
-    "demised premises", "rent", "security deposit",
-]
-
-
 def _detect_doc_type(text: str) -> str:
-    text_lower = text.lower()
-
-    # Count lease vs non-lease signals
-    lease_hits = sum(1 for s in _LEASE_SIGNALS if s in text_lower)
-    non_lease_hits = sum(1 for s in _NOT_LEASE_SIGNALS if s in text_lower)
-
-    # Reject if clearly not a lease (more non-lease signals and very few lease signals)
-    if non_lease_hits >= 2 and lease_hits <= 1:
-        return "not_a_lease"
-
-    if "offer to lease" in text_lower:
-        return "offer_to_lease"
-    if "tenancy offer letter" in text_lower or "offer letter" in text_lower:
-        return "tenancy_offer_letter"
-    if "tenancy agreement" in text_lower:
-        return "lease"
-    if "signed lease" in text_lower or "lease agreement" in text_lower:
-        return "signed_lease"
-    return "unknown"
+    return detect_doc_type(text)

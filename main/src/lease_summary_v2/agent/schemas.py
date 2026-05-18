@@ -22,5 +22,7 @@ class EnhancedFieldDecision(BaseModel):
 class EnhancedExtractionResult(BaseModel):
     decisions: list[EnhancedFieldDecision] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
-    trace_id: str
+    trace_id: str = ""
 
+
+ENHANCED_EXTRACTION_JSON_SCHEMA = EnhancedExtractionResult.model_json_schema()
