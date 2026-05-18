@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Callable
 
@@ -22,6 +23,7 @@ from .core.rule_scanner import run_rule_scanners
 from .core.trace import ExtractionTrace, TraceTimer
 from .core.guardrails import validate_document_text, validate_input_file
 from .models import DocumentMeta, Evidence, ExtractionMethod, ExtractionResult, LeaseSummary, SummaryMeta
+from .normalizers.dates import parse_date
 from .parsers.pdf_text import extract_text
 from .parsers.section_splitter import split
 from .semantic.scanner import semantic_scan_document
@@ -241,7 +243,8 @@ def _apply_agent_decisions(
     for decision in decisions:
         if decision.field_path not in _FIELD_SETTERS:
             continue
-        if decision.selected_value in (None, ""):
+        selected_value = _coerce_agent_value(decision.field_path, decision.selected_value)
+        if selected_value in (None, ""):
             continue
         evidence = [
             Evidence(
@@ -262,7 +265,7 @@ def _apply_agent_decisions(
         if decision.conflict and not flag:
             flag = "Conflicting candidates"
         result = ExtractionResult(
-            value=decision.selected_value,
+            value=selected_value,
             confidence=decision.confidence,
             evidence=evidence,
             review_flag=flag,
@@ -274,6 +277,56 @@ def _apply_agent_decisions(
         )
         _FIELD_SETTERS[decision.field_path](summary, result)
     return summary
+
+
+def _coerce_agent_value(field_path: str, value: Any) -> Any:
+    if value in (None, ""):
+        return None
+    if field_path in _DATE_FIELD_PATHS:
+        return _coerce_date(value)
+    if field_path in _INTEGER_FIELD_PATHS:
+        return _coerce_int(value)
+    if field_path in _NUMBER_FIELD_PATHS:
+        return _coerce_number(value)
+    return value
+
+
+def _coerce_date(value: Any) -> datetime.date | None:
+    if isinstance(value, datetime.datetime):
+        return value.date()
+    if isinstance(value, datetime.date):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return datetime.date.fromisoformat(text[:10])
+    except ValueError:
+        return parse_date(text)
+
+
+def _coerce_int(value: Any) -> int | None:
+    number = _coerce_number(value)
+    if number is None:
+        return None
+    return int(round(number))
+
+
+def _coerce_number(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    match = re.search(r"-?\d[\d,]*(?:\.\d+)?", text)
+    if not match:
+        return None
+    try:
+        return float(match.group(0).replace(",", ""))
+    except ValueError:
+        return None
 
 
 def _sync_break_clause(summary: LeaseSummary) -> None:
@@ -313,6 +366,11 @@ def _json_default(value: Any) -> Any:
     if isinstance(value, (datetime.date, datetime.datetime)):
         return value.isoformat()
     return str(value)
+
+
+_DATE_FIELD_PATHS = {field.field_path for field in FIELD_SPECS if field.value_type == "date"}
+_INTEGER_FIELD_PATHS = {field.field_path for field in FIELD_SPECS if field.value_type == "integer"}
+_NUMBER_FIELD_PATHS = {field.field_path for field in FIELD_SPECS if field.value_type == "number"}
 
 
 _FIELD_SETTERS = {

@@ -16,8 +16,9 @@ import app.main as main_module  # noqa: E402
 import app.state as state_module  # noqa: E402
 from lease_summary_v2.agent.guardrails import MAX_REGEX_MATCHES  # noqa: E402
 from lease_summary_v2.agent.enhancer import run_enhancement_agent  # noqa: E402
+from lease_summary_v2.agent.schemas import EnhancedFieldDecision  # noqa: E402
 from lease_summary_v2.agent.tools import AgentToolbox  # noqa: E402
-from lease_summary_v2.agent.tool_calling import run_llm_tool_agent  # noqa: E402
+from lease_summary_v2.agent.tool_calling import _parse_result, run_llm_tool_agent  # noqa: E402
 from lease_summary_v2.core.candidates import FieldCandidate  # noqa: E402
 from lease_summary_v2.core import guardrails as pipeline_guardrails  # noqa: E402
 from lease_summary_v2.core.document_index import DocumentChunk, DocumentIndex  # noqa: E402
@@ -26,7 +27,7 @@ from lease_summary_v2.core.trace import ExtractionTrace  # noqa: E402
 from lease_summary_v2.models import Evidence, ExtractionMethod, ExtractionResult, LeaseSummary  # noqa: E402
 from lease_summary_v2.parsers.pdf_text import DocumentText, PageText  # noqa: E402
 from lease_summary_v2.parsers.section_splitter import SplitDocument  # noqa: E402
-from lease_summary_v2.pipeline import _sync_break_clause  # noqa: E402
+from lease_summary_v2.pipeline import _apply_agent_decisions, _sync_break_clause  # noqa: E402
 from lease_summary_v2.semantic.scanner import semantic_scan_chunk, semantic_scan_document  # noqa: E402
 from lease_summary_v2.semantic.schema import SemanticFinding  # noqa: E402
 
@@ -307,6 +308,121 @@ def test_llm_tool_agent_can_call_tools_and_return_guarded_decision():
     assert result.decisions[0].field_path == "financials.monthly_rent_hkd"
     assert result.decisions[0].selected_value == 10000
     assert toolbox.trace_calls[0].tool == "read_page"
+
+
+def test_llm_tool_agent_parser_accepts_fields_value_aliases():
+    doc_index = _doc_index(["Tenant: ACME Limited. The monthly rent shall be HK$10,000."])
+    result = _parse_result(
+        json.dumps({
+            "needs_review": True,
+            "fields": [
+                {
+                    "field_path": "parties.tenant_name",
+                    "value": "ACME Limited",
+                    "confidence": 0.9,
+                    "evidence": [
+                        {
+                            "page": 1,
+                            "quote": "Tenant: ACME Limited.",
+                            "method": "semantic_llm",
+                            "chunk_id": "page_1_chunk_1",
+                        }
+                    ],
+                }
+            ],
+        }),
+        doc_index,
+    )
+
+    assert result is not None
+    assert result.decisions[0].field_path == "parties.tenant_name"
+    assert result.decisions[0].selected_value == "ACME Limited"
+    assert result.decisions[0].needs_review is True
+
+
+def test_llm_tool_agent_parser_accepts_nested_result_without_page():
+    doc_index = _doc_index(["Tenant: ACME Limited. The monthly rent shall be HK$10,000."])
+    result = _parse_result(
+        json.dumps({
+            "parties": {
+                "tenant_name": {
+                    "value": "ACME Limited",
+                    "quote": "Tenant: ACME Limited.",
+                }
+            },
+            "financials": {
+                "monthly_rent_hkd": {
+                    "value": 10000,
+                    "quote": "The monthly rent shall be HK$10,000.",
+                }
+            },
+            "needs_review": False,
+        }),
+        doc_index,
+    )
+
+    assert result is not None
+    assert [decision.field_path for decision in result.decisions] == [
+        "parties.tenant_name",
+        "financials.monthly_rent_hkd",
+    ]
+    assert result.decisions[0].evidence[0].page == 1
+    assert result.decisions[0].evidence[0].chunk_id == "page_1_chunk_1"
+
+
+def test_llm_tool_agent_parser_reattaches_candidate_evidence_for_bare_values():
+    doc_index = _doc_index(["Tenant: ACME Limited. The monthly rent shall be HK$10,000."])
+    candidate = FieldCandidate(
+        field_path="parties.tenant_name",
+        value="ACME Limited",
+        confidence=0.91,
+        source="semantic_llm",
+        evidence=[
+            EvidenceSpan(
+                page=1,
+                quote="Tenant: ACME Limited.",
+                method="semantic_llm",
+                chunk_id="page_1_chunk_1",
+            )
+        ],
+        extractor="test",
+    )
+
+    result = _parse_result(
+        json.dumps({"parties": {"tenant_name": "ACME Limited"}, "needs_review": False}),
+        doc_index,
+        candidate_pool=[candidate],
+    )
+
+    assert result is not None
+    assert result.decisions[0].field_path == "parties.tenant_name"
+    assert result.decisions[0].evidence[0].quote == "Tenant: ACME Limited."
+    assert result.decisions[0].sources == ["agent", "semantic_llm"]
+
+
+def test_agent_decisions_coerce_typed_values_before_summary_apply():
+    summary = LeaseSummary()
+    decisions = [
+        EnhancedFieldDecision(
+            field_path="term.lease_commencement_date",
+            selected_value="2023-12-18",
+            confidence=0.9,
+            evidence=[EvidenceSpan(page=1, quote="commencing on 18 December 2023", method="agent")],
+            sources=["agent"],
+        ),
+        EnhancedFieldDecision(
+            field_path="financials.monthly_rent_hkd",
+            selected_value="HK$29,946.00",
+            confidence=0.9,
+            evidence=[EvidenceSpan(page=1, quote="Hong Kong $29,946.00", method="agent")],
+            sources=["agent"],
+        ),
+    ]
+
+    _apply_agent_decisions(summary, decisions, "run_test")
+
+    assert summary.term.lease_commencement_date.value.isoformat() == "2023-12-18"
+    assert summary.financials.monthly_rent_hkd.value == 29946.0
 
 
 def test_regex_tool_clamps_match_count():
