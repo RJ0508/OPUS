@@ -327,6 +327,8 @@ let pageObserver  = null;
 let batchFiles    = [];
 let ocrWordData   = null;  // {pages: {pageNum: [[x0,y0,x1,y1,word], ...]}} for OCR PDFs
 let currentLang = localStorage.getItem('opus_lang') || 'en';
+let activeUploadController = null;
+let _progressTimers = [];
 let modelLoadState = {
   available: [],
   statusKey: 'modelStatusFallback',
@@ -336,11 +338,20 @@ let modelLoadState = {
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 (async () => {
-  await loadSettings();
-  applySettings();
-  applyI18n();
-  bindEvents();
+  resetProgressOverlay();
+  installGlobalErrorHandlers();
+  try {
+    await loadSettings();
+    applySettings();
+    applyI18n();
+    bindEvents();
+  } catch (err) {
+    hideProgress();
+    showToast(`Startup failed: ${err.message || err}`, 'error', 9000);
+  }
 })();
+
+window.addEventListener('pageshow', () => resetProgressOverlay());
 
 // ── i18n ──────────────────────────────────────────────────────────────────────
 function t(key) {
@@ -930,14 +941,21 @@ function bindEvents() {
 
 // ── Upload ────────────────────────────────────────────────────────────────────
 async function uploadFile(file) {
+  if (activeUploadController) activeUploadController.abort();
+  const controller = new AbortController();
+  activeUploadController = controller;
   showProgress(t('progressAnalyse'));
+  const timeoutId = setTimeout(() => controller.abort(), 120000);
   try {
     const form = new FormData();
     form.append('file', file);
-    const r = await fetch(`${API}/api/upload`, { method: 'POST', body: form });
+    const r = await fetch(`${API}/api/upload`, {
+      method: 'POST',
+      body: form,
+      signal: controller.signal,
+    });
     if (!r.ok) {
-      const err = await r.json().catch(() => ({}));
-      throw new Error(err.detail || `Upload failed (${r.status})`);
+      throw new Error(await responseErrorMessage(r, 'Upload failed'));
     }
     summaryData = await r.json();
     // Fetch OCR word bboxes before rendering pages (needed for highlight on scanned PDFs)
@@ -958,8 +976,14 @@ async function uploadFile(file) {
     renderChatSuggestions();
     updateChatAvailability();
   } catch (err) {
-    showToast(`${t('uploadError')}: ${err.message}`, 'error');
+    const message = err.name === 'AbortError'
+      ? 'Analysis timed out. Please try Standard mode or check the configured AI provider.'
+      : err.message;
+    hideProgress();
+    showToast(`${t('uploadError')}: ${message}`, 'error', 9000);
   } finally {
+    clearTimeout(timeoutId);
+    if (activeUploadController === controller) activeUploadController = null;
     hideProgress();
   }
 }
@@ -2032,7 +2056,6 @@ function showUploadScreen() {
   renderExport(null);
 }
 
-let _progressTimers = [];
 function showProgress(label) {
   document.getElementById('progress-label').textContent = label;
   document.getElementById('progress-overlay').classList.add('open');
@@ -2044,6 +2067,49 @@ function hideProgress() {
   _clearProgressTimers();
   // Reset step states for next time
   document.querySelectorAll('#progress-steps .step').forEach(s => s.classList.remove('active', 'done'));
+}
+
+function resetProgressOverlay() {
+  activeUploadController?.abort();
+  activeUploadController = null;
+  const overlay = document.getElementById('progress-overlay');
+  if (overlay) overlay.classList.remove('open');
+  _clearProgressTimers();
+  document.querySelectorAll('#progress-steps .step').forEach(s => s.classList.remove('active', 'done'));
+}
+
+function installGlobalErrorHandlers() {
+  window.addEventListener('unhandledrejection', event => {
+    resetProgressOverlay();
+    const reason = event.reason;
+    const message = reason?.message || String(reason || 'Unexpected error');
+    showToast(message, 'error', 9000);
+  });
+  window.addEventListener('error', event => {
+    resetProgressOverlay();
+    showToast(event.message || 'Unexpected error', 'error', 9000);
+  });
+}
+
+async function responseErrorMessage(response, fallback) {
+  const statusText = `${fallback} (${response.status})`;
+  const contentType = response.headers.get('content-type') || '';
+
+  if (contentType.includes('application/json')) {
+    const payload = await response.json().catch(() => null);
+    const detail = payload?.detail;
+    if (Array.isArray(detail)) {
+      return detail
+        .map(item => item?.msg || item?.message || JSON.stringify(item))
+        .filter(Boolean)
+        .join('; ') || statusText;
+    }
+    if (detail) return String(detail);
+    if (payload?.message) return String(payload.message);
+  }
+
+  const text = await response.text().catch(() => '');
+  return text.trim() || statusText;
 }
 
 function _clearProgressTimers() {
