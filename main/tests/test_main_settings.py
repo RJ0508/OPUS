@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import app.main as main_module  # noqa: E402
 
 
-def test_save_settings_updates_provider_key_and_refreshes(monkeypatch):
+def test_save_settings_updates_provider_key_and_defers_qa_refresh(monkeypatch):
     app_state = main_module.state
     original = {
         "api_keys": dict(app_state.api_keys),
@@ -17,6 +17,7 @@ def test_save_settings_updates_provider_key_and_refreshes(monkeypatch):
         "llm_provider": app_state.llm_provider,
         "llm_base_url": app_state.llm_base_url,
         "llm_model": app_state.llm_model,
+        "qa_engine": app_state.qa_engine,
     }
     calls = {"configure": 0, "refresh": 0, "save": 0}
 
@@ -54,10 +55,12 @@ def test_save_settings_updates_provider_key_and_refreshes(monkeypatch):
             "openai": "openai-secret",
         }
         assert app_state.llm_provider == "openai"
-        assert calls == {"configure": 1, "refresh": 1, "save": 1}
+        assert app_state.qa_engine is None
+        assert calls == {"configure": 1, "refresh": 0, "save": 1}
     finally:
         app_state.api_keys = original["api_keys"]
         app_state.mode = original["mode"]
         app_state.llm_provider = original["llm_provider"]
         app_state.llm_base_url = original["llm_base_url"]
         app_state.llm_model = original["llm_model"]
+        app_state.qa_engine = original["qa_engine"]

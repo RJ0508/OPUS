@@ -100,7 +100,10 @@ def save_settings(payload: SettingsPayload):
     state.llm_base_url = payload.llm_base_url.strip()
     state.llm_model = payload.llm_model.strip()
     _configure_llm_environment()
-    _refresh_qa_engine()
+    # Rebuilding the Q&A engine can require re-reading the active PDF and may
+    # take several seconds. Keep settings saves responsive and rebuild lazily
+    # when the user actually opens Chat.
+    state.qa_engine = None
     state.save_config()
     return {"ok": True}
 
@@ -416,6 +419,8 @@ async def ask_question(payload: QAPayload):
     if not state.llm_enabled():
         raise HTTPException(400, "LLM provider required for Q&A.")
     _configure_llm_environment()  # ensure env vars are current before every chat call
+    if not state.qa_engine or not state.qa_engine.available():
+        _refresh_qa_engine()
     if not state.qa_engine or not state.qa_engine.available():
         raise HTTPException(
             400,

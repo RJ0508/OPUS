@@ -329,6 +329,10 @@ let ocrWordData   = null;  // {pages: {pageNum: [[x0,y0,x1,y1,word], ...]}} for 
 let currentLang = localStorage.getItem('opus_lang') || 'en';
 let activeUploadController = null;
 let _progressTimers = [];
+let eventsBound = false;
+let modelRequestSeq = 0;
+let activeModelController = null;
+let settingsSaveBusy = false;
 let modelLoadState = {
   available: [],
   statusKey: 'modelStatusFallback',
@@ -342,7 +346,7 @@ let modelLoadState = {
   installGlobalErrorHandlers();
   try {
     await loadSettings();
-    applySettings();
+    applySettings(settings, { refreshModels: false });
     applyI18n();
     bindEvents();
   } catch (err) {
@@ -462,7 +466,7 @@ async function loadSettings() {
   }
 }
 
-function applySettings(config = settings) {
+function applySettings(config = settings, options = {}) {
   const provider = normaliseProviderId(config.llm_provider);
   const baseUrl = getConfiguredBaseUrl(provider, config.llm_base_url);
   const desiredModel = sanitizeModelForProvider(
@@ -480,7 +484,9 @@ function applySettings(config = settings) {
     ? getProviderApiKey(provider, config)
     : '';
   renderModelOptions([getProviderConfig(provider).defaultModel].filter(Boolean), desiredModel || getDefaultModel(provider));
-  refreshProviderModels({ desiredModel: desiredModel || getDefaultModel(provider) });
+  if (options.refreshModels !== false) {
+    refreshProviderModels({ desiredModel: desiredModel || getDefaultModel(provider) });
+  }
   document.querySelectorAll('.mode-opt').forEach(el => {
     el.classList.toggle('active', el.dataset.mode === config.mode);
   });
@@ -698,6 +704,8 @@ function shouldLoadLiveModels(providerId, apiKey, baseUrl) {
 }
 
 async function refreshProviderModels(options = {}) {
+  const requestId = ++modelRequestSeq;
+  if (activeModelController) activeModelController.abort();
   const provider = normaliseProviderId(document.getElementById('input-provider')?.value || settings.llm_provider);
   const config = getProviderConfig(provider);
   const baseUrlInput = document.getElementById('input-base-url');
@@ -743,11 +751,14 @@ async function refreshProviderModels(options = {}) {
   modelLoadState.loading = true;
   if (refreshBtn) refreshBtn.disabled = true;
   setModelStatus('modelStatusLoading');
+  const controller = new AbortController();
+  activeModelController = controller;
 
   try {
     const response = await fetch(`${API}/api/llm/models`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
       body: JSON.stringify({
         api_key: (apiKeyInput?.value || '').trim(),
         llm_provider: provider,
@@ -757,6 +768,7 @@ async function refreshProviderModels(options = {}) {
     if (!response.ok) throw new Error('Model list request failed');
 
     const payload = await response.json();
+    if (requestId !== modelRequestSeq) return;
     const liveModels = dedupeModels(payload.models || []);
     if (liveModels.length) {
       modelLoadState.available = liveModels;
@@ -768,18 +780,26 @@ async function refreshProviderModels(options = {}) {
     modelLoadState.available = fallbackModels;
     renderModelOptions(fallbackModels, modelTarget);
     setModelStatus(fallbackModels.length ? 'modelStatusFallback' : 'modelStatusUnavailable');
-  } catch (_) {
+  } catch (err) {
+    if (requestId !== modelRequestSeq) return;
+    if (err.name === 'AbortError') return;
     modelLoadState.available = fallbackModels;
     renderModelOptions(fallbackModels, modelTarget);
     setModelStatus(fallbackModels.length ? 'modelStatusFallback' : 'modelStatusUnavailable');
   } finally {
-    modelLoadState.loading = false;
-    if (refreshBtn) refreshBtn.disabled = false;
+    if (requestId === modelRequestSeq) {
+      modelLoadState.loading = false;
+      if (activeModelController === controller) activeModelController = null;
+      if (refreshBtn) refreshBtn.disabled = false;
+    }
   }
 }
 
 // ── Event bindings ────────────────────────────────────────────────────────────
 function bindEvents() {
+  if (eventsBound) return;
+  eventsBound = true;
+
   // Single lease upload
   const fileInput  = document.getElementById('file-input');
   const btnBrowse  = document.getElementById('btn-browse');
@@ -867,7 +887,7 @@ function bindEvents() {
   document.getElementById('btn-modal-save').addEventListener('click', saveSettings);
   document.getElementById('btn-refresh-models').addEventListener('click', () => refreshProviderModels());
   document.getElementById('modal-overlay').addEventListener('click', e => {
-    if (e.target === document.getElementById('modal-overlay')) closeModal();
+    if (e.target === document.getElementById('modal-overlay')) e.stopPropagation();
   });
   document.getElementById('input-provider').addEventListener('change', () => {
     const workingConfig = settingsForm || settings;
@@ -1975,8 +1995,9 @@ function showToast(message, type = 'info', duration = 5000) {
 
 // ── Settings modal ────────────────────────────────────────────────────────────
 function openModal() {
+  if (settingsSaveBusy) return;
   settingsForm = cloneSettings(settings);
-  applySettings(settingsForm);
+  applySettings(settingsForm, { refreshModels: false });
   // Always open with API key masked
   const inp = document.getElementById('input-apikey');
   const btn = document.getElementById('btn-toggle-apikey');
@@ -1989,12 +2010,19 @@ function openModal() {
   document.getElementById('modal-overlay').classList.add('open');
 }
 
-function closeModal() {
+function closeModal(options = {}) {
+  if (settingsSaveBusy && !options.force) return;
   settingsForm = null;
   document.getElementById('modal-overlay').classList.remove('open');
 }
 
 async function saveSettings() {
+  if (settingsSaveBusy) return;
+  if (activeModelController) activeModelController.abort();
+  modelRequestSeq += 1;
+  modelLoadState.loading = false;
+  const refreshBtn = document.getElementById('btn-refresh-models');
+  if (refreshBtn) refreshBtn.disabled = false;
   const draft = cloneSettings(settingsForm || settings);
   const provider = normaliseProviderId(document.getElementById('input-provider').value);
   setProviderApiKey(provider, document.getElementById('input-apikey').value, draft);
@@ -2002,24 +2030,47 @@ async function saveSettings() {
   const model = getSelectedModelValue() || getDefaultModel(provider);
   const mode   = document.querySelector('.mode-opt.active')?.dataset.mode || 'regex';
 
-  settings = normaliseSettings({
+  const nextSettings = normaliseSettings({
     ...draft,
     mode,
     llm_provider: provider,
     llm_base_url: baseUrl,
     llm_model: model,
   });
+
+  settingsSaveBusy = true;
+  const saveBtn = document.getElementById('btn-modal-save');
+  const cancelBtn = document.getElementById('btn-modal-cancel');
+  const originalSaveText = saveBtn?.textContent || t('modalSave');
+  if (saveBtn) {
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Saving...';
+  }
+  if (cancelBtn) cancelBtn.disabled = true;
+
   try {
-    await fetch(`${API}/api/settings`, {
+    const response = await fetch(`${API}/api/settings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(settings),
+      body: JSON.stringify(nextSettings),
     });
-  } catch (_) {}
+    if (!response.ok) throw new Error(await responseErrorMessage(response, 'Save failed'));
 
-  settingsForm = null;
-  applySettings();
-  closeModal();
+    settings = nextSettings;
+    settingsForm = null;
+    applySettings(settings, { refreshModels: false });
+    closeModal({ force: true });
+    showToast('Settings saved', 'success', 2500);
+  } catch (err) {
+    showToast(`Settings not saved: ${err.message || err}`, 'error', 9000);
+  } finally {
+    settingsSaveBusy = false;
+    if (saveBtn) {
+      saveBtn.disabled = false;
+      saveBtn.textContent = originalSaveText;
+    }
+    if (cancelBtn) cancelBtn.disabled = false;
+  }
 }
 
 // ── Tabs ──────────────────────────────────────────────────────────────────────
