@@ -9,6 +9,7 @@ from urllib.request import Request, urlopen
 _DEFAULT_PROVIDER = ""
 _DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434/v1"
 _DEFAULT_LMSTUDIO_BASE_URL = "http://127.0.0.1:1234/v1"
+_DEFAULT_CHAT_REQUEST_TIMEOUT_SECONDS = 45.0
 _LOCAL_BASE_PREFIXES = ("http://127.0.0.1", "http://localhost")
 _LOCAL_PROVIDERS = {"ollama", "lmstudio"}
 _PROVIDER_DEFAULTS = {
@@ -378,7 +379,7 @@ def _safe_chat_create(client, **kwargs):
     parameters. This helper keeps callers provider-agnostic by retrying with
     conservative parameter changes when a model rejects otherwise valid input.
     """
-    current_kwargs = dict(kwargs)
+    current_kwargs = _with_default_chat_timeout(dict(kwargs))
     seen_signatures: set[str] = set()
     last_exc: Exception | None = None
 
@@ -441,7 +442,29 @@ def _adapt_chat_kwargs_for_error(kwargs: dict, error_text: str) -> dict | None:
         retry_kwargs.pop("parallel_tool_calls", None)
         return retry_kwargs
 
+    if _parameter_rejected(text, "timeout") and "timeout" in kwargs:
+        retry_kwargs = dict(kwargs)
+        retry_kwargs.pop("timeout", None)
+        return retry_kwargs
+
     return None
+
+
+def _with_default_chat_timeout(kwargs: dict) -> dict:
+    if "timeout" not in kwargs:
+        kwargs["timeout"] = _chat_request_timeout_seconds()
+    return kwargs
+
+
+def _chat_request_timeout_seconds() -> float:
+    raw = os.environ.get("LLM_REQUEST_TIMEOUT_SECONDS", "").strip()
+    if not raw:
+        return _DEFAULT_CHAT_REQUEST_TIMEOUT_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        return _DEFAULT_CHAT_REQUEST_TIMEOUT_SECONDS
+    return max(5.0, min(value, 300.0))
 
 
 def _kwargs_signature(kwargs: dict) -> str:

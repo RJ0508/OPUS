@@ -17,6 +17,8 @@ const PROVIDER_ORDER = [
   'ollama',
   'custom',
 ];
+const STANDARD_ANALYSIS_TIMEOUT_MS = 120000;
+const AI_ANALYSIS_TIMEOUT_MS = 900000;
 
 const PROVIDER_CATALOG = {
   openai: {
@@ -1026,7 +1028,10 @@ async function uploadFile(file) {
   activeProgressRunId = runId;
   showProgress(t('progressAnalyse'), { mode: settings.mode, streaming: true });
   startProgressStream(runId);
-  const timeoutId = setTimeout(() => controller.abort(), 120000);
+  const timeoutMs = normalizeMode(settings.mode) === 'standard'
+    ? STANDARD_ANALYSIS_TIMEOUT_MS
+    : AI_ANALYSIS_TIMEOUT_MS;
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const form = new FormData();
     form.append('file', file);
@@ -1062,7 +1067,7 @@ async function uploadFile(file) {
     }
   } catch (err) {
     const message = err.name === 'AbortError'
-      ? 'Analysis timed out. Please try Standard mode or check the configured AI provider.'
+      ? `Analysis timed out after ${Math.round(timeoutMs / 60000)} minutes. Please try Standard mode or check the configured AI provider.`
       : err.message;
     hideProgress();
     showToast(`${t('uploadError')}: ${message}`, 'error', 9000);

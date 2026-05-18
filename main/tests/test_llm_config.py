@@ -193,6 +193,7 @@ def test_safe_chat_create_retries_temperature_one_models():
     )
 
     assert response.ok is True
+    assert calls[0]["timeout"] == 45.0
     assert calls[0]["temperature"] == 0
     assert calls[1]["temperature"] == 1
 
@@ -233,3 +234,41 @@ def test_safe_chat_create_adapts_common_provider_parameter_rejections():
     assert calls[3]["response_format"] == {"type": "json_object"}
     assert "tools" not in calls[4]
     assert "tool_choice" not in calls[4]
+
+
+def test_safe_chat_create_uses_configurable_default_timeout(monkeypatch):
+    calls: list[dict] = []
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(ok=True)
+
+    monkeypatch.setenv("LLM_REQUEST_TIMEOUT_SECONDS", "12")
+    client = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions()))
+
+    response = llm_config._safe_chat_create(client, model="provider-model", messages=[])
+
+    assert response.ok is True
+    assert calls[0]["timeout"] == 12.0
+
+
+def test_safe_chat_create_preserves_explicit_timeout():
+    calls: list[dict] = []
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(ok=True)
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions()))
+
+    response = llm_config._safe_chat_create(
+        client,
+        model="provider-model",
+        messages=[],
+        timeout=3,
+    )
+
+    assert response.ok is True
+    assert calls[0]["timeout"] == 3
