@@ -2,9 +2,15 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
-from lease_summary.llm_config import _safe_chat_create, strict_function_tool, structured_response_format
+from lease_summary.llm_config import (
+    _safe_chat_create,
+    extract_message_text,
+    strict_function_tool,
+    structured_response_format,
+)
 
 from ..core.candidates import FieldCandidate
 from ..core.document_index import DocumentIndex
@@ -52,11 +58,11 @@ def run_llm_tool_agent(
             tool_calls = list(getattr(message, "tool_calls", None) or [])
             if not tool_calls:
                 parsed = _parse_result(
-                    getattr(message, "content", "") or "",
+                    extract_message_text(message),
                     doc_index,
                     candidate_pool=[*rule_candidates, *semantic_candidates],
                 )
-                if parsed:
+                if parsed and parsed.decisions:
                     return parsed
                 break
             messages.append(_assistant_tool_call_message(message, tool_calls))
@@ -71,27 +77,68 @@ def run_llm_tool_agent(
                     ),
                 })
 
-        final_response = _safe_chat_create(
-            client,
+        return _request_final_result(
+            client=client,
             model=model,
-            messages=[
-                *messages,
-                {"role": "user", "content": "Return final EnhancedExtractionResult JSON now. Do not call tools."},
-            ],
-            temperature=0,
-            max_tokens=2600,
-            response_format=structured_response_format(
-                "enhanced_extraction_result",
-                ENHANCED_EXTRACTION_JSON_SCHEMA,
-            ),
-        )
-        return _parse_result(
-            final_response.choices[0].message.content or "",
-            doc_index,
+            messages=messages,
+            doc_index=doc_index,
             candidate_pool=[*rule_candidates, *semantic_candidates],
         )
     except Exception:
         return None
+
+
+def _request_final_result(
+    *,
+    client,
+    model: str,
+    messages: list[dict[str, Any]],
+    doc_index: DocumentIndex,
+    candidate_pool: list[FieldCandidate],
+) -> EnhancedExtractionResult | None:
+    final_messages = [
+        *messages,
+        {
+            "role": "user",
+            "content": (
+                "Return final EnhancedExtractionResult JSON now. Do not call tools. "
+                "Prefer a top-level decisions array. Do not include Markdown."
+            ),
+        },
+    ]
+    attempts = [
+        (
+            "json_schema",
+            {
+                "response_format": structured_response_format(
+                    "enhanced_extraction_result",
+                    ENHANCED_EXTRACTION_JSON_SCHEMA,
+                )
+            },
+        ),
+        ("json_object", {"response_format": {"type": "json_object"}}),
+        ("plain_json", {}),
+    ]
+    last_result: EnhancedExtractionResult | None = None
+    for _attempt_name, extra_kwargs in attempts:
+        response = _safe_chat_create(
+            client,
+            model=model,
+            messages=final_messages,
+            temperature=0,
+            max_tokens=2600,
+            **extra_kwargs,
+        )
+        parsed = _parse_result(
+            extract_message_text(response.choices[0].message),
+            doc_index,
+            candidate_pool=candidate_pool,
+        )
+        if parsed and parsed.decisions:
+            return parsed
+        if parsed is not None:
+            last_result = parsed
+    return last_result
 
 
 def _agent_input(
@@ -571,15 +618,29 @@ def _parse_json(text: str) -> dict | None:
     text = (text or "").strip()
     if not text:
         return None
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```\s*$", "", text)
     try:
-        return json.loads(text)
+        data = json.loads(text)
+        if isinstance(data, list):
+            return {"decisions": data}
+        return data if isinstance(data, dict) else None
     except json.JSONDecodeError:
         start = text.find("{")
         end = text.rfind("}")
         if start < 0 or end <= start:
-            return None
+            array_start = text.find("[")
+            array_end = text.rfind("]")
+            if array_start < 0 or array_end <= array_start:
+                return None
+            try:
+                data = json.loads(text[array_start:array_end + 1])
+                return {"decisions": data} if isinstance(data, list) else None
+            except json.JSONDecodeError:
+                return None
         try:
-            return json.loads(text[start:end + 1])
+            data = json.loads(text[start:end + 1])
+            return data if isinstance(data, dict) else None
         except json.JSONDecodeError:
             return None
 

@@ -154,6 +154,39 @@ def test_semantic_scan_retries_json_object_when_structured_content_is_invalid():
     assert findings[0].field_path == "parties.tenant_name"
 
 
+def test_semantic_scan_retries_plain_json_for_models_that_ignore_response_format():
+    calls: list[dict] = []
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            content = (
+                "not json"
+                if len(calls) < 3
+                else '{"parties":{"tenant_name":"ACME Limited"}}'
+            )
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
+            )
+
+    chunk = DocumentChunk(
+        chunk_id="page_1_chunk_1",
+        text="Tenant: ACME Limited",
+        page_start=1,
+        page_end=1,
+        section="principal_terms",
+    )
+    client = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions()))
+
+    findings = semantic_scan_chunk(chunk, [], client=client, model="openai-compatible-model")
+
+    assert len(calls) == 3
+    assert calls[0]["response_format"]["type"] == "json_schema"
+    assert calls[1]["response_format"] == {"type": "json_object"}
+    assert "response_format" not in calls[2]
+    assert findings[0].field_path == "parties.tenant_name"
+
+
 def test_semantic_scan_accepts_whitespace_normalized_evidence_quote():
     doc_index = _doc_index(["Tenant:\n  ACME Limited\nMonthly rent shall be HK$10,000."])
 
@@ -465,6 +498,32 @@ def test_llm_tool_agent_parser_reattaches_candidate_evidence_for_bare_values():
     assert result.decisions[0].field_path == "parties.tenant_name"
     assert result.decisions[0].evidence[0].quote == "Tenant: ACME Limited."
     assert result.decisions[0].sources == ["agent", "semantic_llm"]
+
+
+def test_llm_tool_agent_parser_accepts_top_level_array_and_content_parts():
+    doc_index = _doc_index(["Tenant: ACME Limited."])
+    raw = [
+        {"type": "reasoning", "content": "internal"},
+        {
+            "type": "text",
+            "text": json.dumps([
+                {
+                    "field_path": "parties.tenant_name",
+                    "selected_value": "ACME Limited",
+                    "confidence": 0.9,
+                    "evidence": [{"page": 1, "quote": "Tenant: ACME Limited.", "method": "agent"}],
+                    "sources": ["agent"],
+                }
+            ]),
+        },
+    ]
+
+    from lease_summary.llm_config import extract_message_text
+
+    result = _parse_result(extract_message_text(SimpleNamespace(content=raw)), doc_index)
+
+    assert result is not None
+    assert result.decisions[0].field_path == "parties.tenant_name"
 
 
 def test_agent_decisions_coerce_typed_values_before_summary_apply():

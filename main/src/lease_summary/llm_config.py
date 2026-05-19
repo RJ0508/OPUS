@@ -12,6 +12,8 @@ _DEFAULT_LMSTUDIO_BASE_URL = "http://127.0.0.1:1234/v1"
 _DEFAULT_CHAT_REQUEST_TIMEOUT_SECONDS = 45.0
 _LOCAL_BASE_PREFIXES = ("http://127.0.0.1", "http://localhost")
 _LOCAL_PROVIDERS = {"ollama", "lmstudio"}
+_TRUE_VALUES = {"1", "true", "on", "enabled", "always", "yes"}
+_FALSE_VALUES = {"0", "false", "off", "disabled", "never", "no"}
 _PROVIDER_DEFAULTS = {
     "openai": {
         "base_url": "https://api.openai.com/v1",
@@ -255,6 +257,89 @@ def structured_response_format(
     }
 
 
+def extract_message_text(message_or_content) -> str:
+    """Return plain text from common OpenAI-compatible message shapes."""
+    if message_or_content is None:
+        return ""
+    if isinstance(message_or_content, str):
+        return message_or_content
+    if isinstance(message_or_content, list):
+        parts: list[str] = []
+        for item in message_or_content:
+            text = extract_message_text(item)
+            if text:
+                parts.append(text)
+        return "\n".join(parts)
+    if isinstance(message_or_content, dict):
+        part_type = str(message_or_content.get("type") or "").lower()
+        if part_type in {"reasoning", "thinking"}:
+            return ""
+        for key in ("text", "content", "output_text"):
+            value = message_or_content.get(key)
+            text = extract_message_text(value)
+            if text:
+                return text
+        if "json" in message_or_content:
+            try:
+                return json.dumps(message_or_content["json"], ensure_ascii=False)
+            except TypeError:
+                return str(message_or_content["json"])
+        return ""
+
+    content = getattr(message_or_content, "content", None)
+    text = extract_message_text(content)
+    if text:
+        return text
+    for attr in ("text", "output_text"):
+        value = getattr(message_or_content, attr, None)
+        text = extract_message_text(value)
+        if text:
+            return text
+    return ""
+
+
+def should_use_llm_tool_agent(*, provider: str | None = None, model: str | None = None) -> bool:
+    """Return whether the optional LLM tool finalizer should run in auto mode.
+
+    AI Enhanced does not depend on this finalizer. Unknown or partially
+    compatible models still get full-document semantic scan plus deterministic
+    evidence verification.
+    """
+    mode = os.environ.get("LLM_TOOL_AGENT", "auto").strip().lower()
+    if mode in _FALSE_VALUES:
+        return False
+    if mode in _TRUE_VALUES:
+        return True
+
+    provider_id = (provider or os.environ.get("LLM_PROVIDER") or "").strip().lower()
+    normalized_model = (model or os.environ.get("LLM_MODEL") or "").strip().lower().replace("_", "-")
+    if not normalized_model:
+        return False
+
+    denied = _csv_contains(os.environ.get("LLM_TOOL_AGENT_DENY_MODELS"), normalized_model, provider_id)
+    if denied:
+        return False
+    allowed = _csv_contains(os.environ.get("LLM_TOOL_AGENT_ALLOW_MODELS"), normalized_model, provider_id)
+    if allowed:
+        return True
+
+    if provider_id == "openai":
+        return True
+    if provider_id == "openrouter" and normalized_model.startswith("openai/"):
+        return True
+
+    reliable_prefixes = (
+        "gpt-",
+        "chatgpt-",
+        "openai/gpt-",
+        "openai/chatgpt-",
+        "o1",
+        "o3",
+        "o4",
+    )
+    return normalized_model.startswith(reliable_prefixes)
+
+
 def list_available_models(
     *,
     provider: str,
@@ -370,6 +455,16 @@ def _dedupe_model_ids(values) -> list[str]:
         seen.add(value)
         result.append(value)
     return result
+
+
+def _csv_contains(raw: str | None, model: str, provider: str) -> bool:
+    if not raw:
+        return False
+    values = [item.strip().lower().replace("_", "-") for item in raw.split(",") if item.strip()]
+    if not values:
+        return False
+    haystacks = [model, provider, f"{provider}:{model}" if provider and model else ""]
+    return any(value and any(value in haystack for haystack in haystacks if haystack) for value in values)
 
 
 def _safe_chat_create(client, **kwargs):

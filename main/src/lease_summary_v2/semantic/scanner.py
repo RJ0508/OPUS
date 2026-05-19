@@ -6,7 +6,12 @@ import re
 from difflib import SequenceMatcher
 from typing import Callable
 
-from lease_summary.llm_config import _safe_chat_create, build_openai_client, structured_response_format
+from lease_summary.llm_config import (
+    _safe_chat_create,
+    build_openai_client,
+    extract_message_text,
+    structured_response_format,
+)
 
 from ..core.candidates import FieldCandidate
 from ..core.document_index import DocumentChunk, DocumentIndex
@@ -116,37 +121,51 @@ def semantic_scan_chunk(
             SEMANTIC_SCAN_JSON_SCHEMA,
         ),
     }
-    structured_error = ""
-    try:
-        response = _safe_chat_create(client, **kwargs)
-        result, structured_error = _parse_semantic_response(
-            response.choices[0].message.content or "",
-            chunk_id=chunk.chunk_id,
-        )
-        if result is not None:
-            return result.findings
-    except Exception as exc:
-        structured_error = f"{type(exc).__name__}: {str(exc)[:220]}"
-
-    fallback_kwargs = dict(kwargs)
-    fallback_kwargs["response_format"] = {"type": "json_object"}
-    try:
-        response = _safe_chat_create(client, **fallback_kwargs)
-        result, fallback_error = _parse_semantic_response(
-            response.choices[0].message.content or "",
-            chunk_id=chunk.chunk_id,
-        )
-        if result is not None:
-            return result.findings
-    except Exception as fallback_exc:
-        fallback_error = f"{type(fallback_exc).__name__}: {str(fallback_exc)[:220]}"
+    errors: list[str] = []
+    for attempt_name, attempt_kwargs in _semantic_request_attempts(kwargs):
+        try:
+            response = _safe_chat_create(client, **attempt_kwargs)
+            result, error = _parse_semantic_response(
+                extract_message_text(response.choices[0].message),
+                chunk_id=chunk.chunk_id,
+            )
+            if result is not None:
+                return result.findings
+            errors.append(f"{attempt_name}={error}")
+        except Exception as exc:
+            errors.append(f"{attempt_name}={type(exc).__name__}: {str(exc)[:220]}")
 
     if warning_callback is not None:
         warning_callback(
             f"Semantic scan failed for {chunk.chunk_id}: "
-            f"structured={structured_error}; json_object={fallback_error}"
+            f"{'; '.join(errors)}"
         )
     return []
+
+
+def _semantic_request_attempts(kwargs: dict) -> list[tuple[str, dict]]:
+    structured_kwargs = dict(kwargs)
+
+    json_object_kwargs = dict(kwargs)
+    json_object_kwargs["response_format"] = {"type": "json_object"}
+
+    plain_kwargs = dict(kwargs)
+    plain_kwargs.pop("response_format", None)
+    plain_kwargs["messages"] = [
+        *plain_kwargs.get("messages", []),
+        {
+            "role": "user",
+            "content": (
+                "Return only valid JSON. Use either {\"findings\":[...]} or a nested "
+                "object keyed by the target field paths. Do not include Markdown."
+            ),
+        },
+    ]
+    return [
+        ("json_schema", structured_kwargs),
+        ("json_object", json_object_kwargs),
+        ("plain_json", plain_kwargs),
+    ]
 
 
 def _parse_semantic_response(raw: str, *, chunk_id: str) -> tuple[SemanticScanResult | None, str]:

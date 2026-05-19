@@ -124,6 +124,33 @@ def test_local_provider_helper_detects_localhost_endpoint():
     assert not llm_config.is_local_provider("openai", "https://api.openai.com/v1")
 
 
+def test_extract_message_text_accepts_common_content_shapes():
+    message = SimpleNamespace(content=[
+        {"type": "reasoning", "content": "hidden reasoning"},
+        {"type": "text", "text": '{"ok":true}'},
+    ])
+
+    assert llm_config.extract_message_text(message) == '{"ok":true}'
+    assert llm_config.extract_message_text({"content": [{"text": "hello"}]}) == "hello"
+
+
+def test_tool_agent_auto_mode_is_capability_based(monkeypatch):
+    monkeypatch.delenv("LLM_TOOL_AGENT", raising=False)
+    monkeypatch.delenv("LLM_TOOL_AGENT_ALLOW_MODELS", raising=False)
+    monkeypatch.delenv("LLM_TOOL_AGENT_DENY_MODELS", raising=False)
+
+    assert llm_config.should_use_llm_tool_agent(provider="openai", model="gpt-5.4-mini")
+    assert llm_config.should_use_llm_tool_agent(provider="openrouter", model="openai/gpt-5.2")
+    assert not llm_config.should_use_llm_tool_agent(provider="moonshot", model="kimi-k2.6")
+    assert not llm_config.should_use_llm_tool_agent(provider="custom", model="unknown-model")
+
+    monkeypatch.setenv("LLM_TOOL_AGENT_ALLOW_MODELS", "unknown-model")
+    assert llm_config.should_use_llm_tool_agent(provider="custom", model="unknown-model")
+
+    monkeypatch.setenv("LLM_TOOL_AGENT", "disabled")
+    assert not llm_config.should_use_llm_tool_agent(provider="openai", model="gpt-5.4-mini")
+
+
 def test_list_available_models_uses_ollama_defaults(monkeypatch):
     captured: dict[str, object] = {}
 

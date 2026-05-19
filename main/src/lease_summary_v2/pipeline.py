@@ -153,6 +153,7 @@ def run(
                 trace=trace,
                 client=llm_client,
                 model=llm_model,
+                provider=llm_settings.provider if llm_settings else None,
             )
             summary = _apply_agent_decisions(summary, enhanced.decisions, trace.run_id)
         elif pure_llm:

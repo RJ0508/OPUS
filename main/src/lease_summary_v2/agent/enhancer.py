@@ -1,9 +1,10 @@
 """Bounded evidence-first enhancer for AI Enhanced extraction."""
 from __future__ import annotations
 
-import os
 from collections import defaultdict
 from typing import Any
+
+from lease_summary.llm_config import should_use_llm_tool_agent
 
 from ..core.candidates import FieldCandidate
 from ..core.document_index import DocumentIndex
@@ -34,13 +35,14 @@ def run_enhancement_agent(
     trace: ExtractionTrace,
     client=None,
     model: str | None = None,
+    provider: str | None = None,
 ) -> EnhancedExtractionResult:
     toolbox = AgentToolbox(doc_index, client=client, model=model)
     if (
         current_summary is not None
         and client is not None
         and model
-        and _should_use_llm_tool_agent(model)
+        and should_use_llm_tool_agent(provider=provider, model=model)
     ):
         llm_result = run_llm_tool_agent(
             doc_index=doc_index,
@@ -160,30 +162,3 @@ def _reason(
 
 def _normalize_value(value: Any) -> str:
     return str(value).strip().lower().replace(",", "")
-
-
-def _should_use_llm_tool_agent(model: str | None) -> bool:
-    mode = os.environ.get("LLM_TOOL_AGENT", "auto").strip().lower()
-    if mode in {"0", "false", "off", "disabled", "never"}:
-        return False
-    if mode in {"1", "true", "on", "enabled", "always"}:
-        return True
-
-    normalized = (model or "").strip().lower().replace("_", "-")
-    if not normalized:
-        return False
-
-    # Moonshot/Kimi currently supports parts of the OpenAI-compatible API, but
-    # does not reliably return bounded final JSON after tool rounds. Let the
-    # deterministic evidence verifier handle final decisions instead of spending
-    # several slow requests and then surfacing a misleading "unavailable" warning.
-    moonshot_markers = (
-        "kimi-",
-        "moonshot-v1",
-        "moonshotai/",
-        "vision-preview",
-    )
-    if any(marker in normalized for marker in moonshot_markers):
-        return False
-
-    return True
